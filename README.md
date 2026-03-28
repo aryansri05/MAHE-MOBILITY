@@ -53,15 +53,15 @@ The pipeline is composed of four learnable stages:
 ┌─────────────────────────────────────────────────────────────────┐
 │                        PIPELINE OVERVIEW                        │
 │                                                                 │
-│  RGB Image         Feature Pyramid      BEV Feature Map        │
-│  (256×704)              (FPN)             (200×200)            │
-│      │                   │                    │                │
-│  ┌───▼───┐          ┌────▼────┐          ┌────▼────┐          │
-│  │ Effic │          │   LSS   │          │  U-Net  │          │
-│  │ Net-B4│ ───────► │  View   │ ───────► │ Decoder │ ──► Mask │
-│  │  +FPN │          │ Transf. │          │         │          │
-│  └───────┘          └─────────┘          └─────────┘          │
-│  Backbone           Lift·Splat·Shoot      BEV Decoder         │
+│  RGB Image         Feature Pyramid      BEV Feature Map         │
+│  (256×704)              (FPN)             (200×200)             │
+│      │                   │                    │                 │
+│  ┌───▼───┐          ┌────▼────┐          ┌────▼────┐            │
+│  │ Effic │          │   LSS   │          │  U-Net  │            │
+│  │ Net-B4│ ───────► │  View   │ ───────► │ Decoder │ ──► Mask   │
+│  │  +FPN │          │ Transf. │          │         │            │
+│  └───────┘          └─────────┘          └─────────┘            │
+│  Backbone           Lift·Splat·Shoot      BEV Decoder           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
