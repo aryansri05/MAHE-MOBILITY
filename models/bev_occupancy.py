@@ -30,8 +30,8 @@ import torch
 import torch.nn as nn
 
 from config           import GRID_H, GRID_W, OCC_THRESHOLD
-from bev_encoder      import BEVEncoder
-from occupancy import (
+from models.bev_encoder      import BEVEncoder
+from models.occupancy import (
     OccupancyHead,
     OccupancyCriterion,
     occupancy_iou,

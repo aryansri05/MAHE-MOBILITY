@@ -19,6 +19,8 @@ from geometry.lss_core import (                              # LSS geometry engi
 )
 from task1_lidar_to_occupancy import load_lidar_ego_frame, lidar_to_occupancy
 from task2_distance_weighted_loss import DistanceWeightedBCELoss
+from models.bev_occupancy import BEVOccupancyModel
+from config import X_MIN, X_MAX, Y_MIN, Y_MAX, RESOLUTION
 
 
 # =============================================================
@@ -130,6 +132,7 @@ class BEVModel(nn.Module):
         # precomp is rebuilt each forward() with real extrinsics
         self.geometry = GeometryArchitect(cam_cfg, bev_cfg, depth_cfg,
                                           ego2cam=torch.eye(4))
+        self.occupancy_model = BEVOccupancyModel(lift_channels=out_channels)
 
     def forward(
         self,
@@ -163,8 +166,9 @@ class BEVModel(nn.Module):
             ).to(device)
 
         # ── Stage 3: Splat into BEV ──────────────────────────────────
-        bev = self.geometry(feat_3d)                  # (B, C, bev_H, bev_W)
-        return bev
+        bev_raw = self.geometry(feat_3d)                  # (B, C, bev_H, bev_W)
+        logits = self.occupancy_model(bev_raw)            # (B, 1, bev_H, bev_W)
+        return logits
 
 
 # =============================================================
@@ -175,7 +179,7 @@ class NuScenesFrontCameraDataset(Dataset):
     def __init__(self, dataroot='./data/nuscenes', version='v1.0-mini'):
         print(f"Loading nuScenes database from {dataroot}...")
         self.nusc    = NuScenes(version=version, dataroot=dataroot, verbose=False)
-        self.samples = self.nusc.sample
+        self.samples = self.nusc.sample[:15]
 
         self.transform = transforms.Compose([
             transforms.Resize((224, 480)),
@@ -224,7 +228,7 @@ def train_pipeline(
 
     # Configs — image size must match dataset resize
     cam_cfg   = CameraConfig(image_h=224, image_w=480)
-    bev_cfg   = BEVGridConfig()
+    bev_cfg   = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
     depth_cfg = DepthConfig()
 
     # Dataset & loader
