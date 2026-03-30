@@ -1,0 +1,7 @@
+bev_env/
+__pycache__/
+data/
+*.npy
+*.pth
+*.png
+*.pt
