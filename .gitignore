@@ -6,3 +6,4 @@ outputs/*.npy
 outputs/*.png
 .DS_Store
 .venv/
+data/

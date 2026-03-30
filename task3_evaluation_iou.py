@@ -187,7 +187,7 @@ def visualise_error_map(
 
     fig, axes = plt.subplots(1, 4, figsize=(18, 5))
     extent    = [X_MIN, X_MAX, Y_MIN, Y_MAX]
-    flip      = lambda g: np.flipud(g)
+    flip      = lambda g: g
 
     # Panel 0: ground truth
     axes[0].imshow(flip(gt), cmap="gray", origin="lower", extent=extent)
@@ -227,7 +227,7 @@ def visualise_error_map(
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"  Error map saved → {save_path}")
-    plt.show()
+    plt.close()
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -338,7 +338,7 @@ if __name__ == "__main__":
     from task1_lidar_to_occupancy import load_nuscenes, load_lidar_ego_frame, lidar_to_occupancy
     from task3_evaluation_iou import compute_occupancy_iou, print_metrics, visualise_error_map
 
-    nusc = load_nuscenes("/data/nuscenes")
+    nusc = load_nuscenes("./data/nuscenes")
 
     for sample in nusc.sample[:10]:
         gt   = lidar_to_occupancy(load_lidar_ego_frame(nusc, sample["token"]))

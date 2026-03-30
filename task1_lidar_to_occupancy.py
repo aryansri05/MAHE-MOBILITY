@@ -170,11 +170,8 @@ def visualise_occupancy(grid: np.ndarray, save_path: str = None):
     """
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    # flip vertically so Y=0 (closest) is at the bottom
-    display = np.flipud(grid)
-
     ax.imshow(
-        display,
+        grid,
         cmap    = "RdYlGn_r",   # red = occupied, green = free
         origin  = "lower",
         extent  = [X_MIN, X_MAX, Y_MIN, Y_MAX],
@@ -200,7 +197,7 @@ def visualise_occupancy(grid: np.ndarray, save_path: str = None):
     if save_path:
         plt.savefig(save_path, dpi=150)
         print(f"  Plot saved → {save_path}")
-    plt.show()
+    plt.close()
 
 
 def save_grid(grid: np.ndarray, path: str = "ground_truth_occ.npy"):
@@ -215,7 +212,7 @@ def save_grid(grid: np.ndarray, path: str = "ground_truth_occ.npy"):
 if __name__ == "__main__":
 
     # ── CONFIG — edit these two lines ────────────────────────────
-    DATAROOT     = "/data/nuscenes"      # path to your dataset
+    DATAROOT     = "./data/nuscenes"     # path to your dataset
     NUSCENES_VER = "v1.0-mini"           # or "v1.0-trainval"
     SAMPLE_IDX   = 0                     # which sample to use (0 = first)
     # ─────────────────────────────────────────────────────────────

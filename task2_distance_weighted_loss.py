@@ -155,7 +155,7 @@ def visualise_weight_mask(mask: np.ndarray, save_path: str = None):
     fig, ax = plt.subplots(figsize=(6, 6))
 
     im = ax.imshow(
-        np.flipud(mask),           # flip so Y=0 is at the bottom
+        mask,
         cmap   = "hot",
         origin = "lower",
         extent = [X_MIN, X_MAX, Y_MIN, Y_MAX],
@@ -174,7 +174,7 @@ def visualise_weight_mask(mask: np.ndarray, save_path: str = None):
     if save_path:
         plt.savefig(save_path, dpi=150)
         print(f"  Plot saved → {save_path}")
-    plt.show()
+    plt.close()
 
 
 # ═════════════════════════════════════════════════════════════════

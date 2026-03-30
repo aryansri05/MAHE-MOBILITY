@@ -16,7 +16,7 @@ GRID_W = int((X_MAX - X_MIN) / RESOLUTION)   # 250  (X axis)
 GRID_H = int((Y_MAX - Y_MIN) / RESOLUTION)   # 250  (Y axis)
 
 # LiDAR height filter — ignore ground and very high points
-Z_MIN = -2.0   # metres  (ground plane ≈ −1.7 m in nuScenes)
+Z_MIN = -1.0   # metres  (ground plane ≈ −1.7 m in nuScenes, filter set higher to ignore ground)
 Z_MAX =  1.5   # metres  (crop out lamp posts, sky, etc.)
 
 # Occupancy threshold — model logit above this → "occupied"
