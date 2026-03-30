@@ -8,7 +8,7 @@ from task1_lidar_to_occupancy import load_lidar_ego_frame, lidar_to_occupancy
 class NuScenesFrontCameraDataset(Dataset):
     def __init__(self, dataroot='./data/nuscenes', version='v1.0-mini'):
         self.nusc = NuScenes(version=version, dataroot=dataroot, verbose=False)
-        self.samples = self.nusc.sample[:15]
+        self.samples = self.nusc.sample[:5]
         self.transform = transforms.Compose([
             transforms.Resize((224, 480)),
             transforms.ToTensor(),

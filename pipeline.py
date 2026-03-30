@@ -179,7 +179,7 @@ class NuScenesFrontCameraDataset(Dataset):
     def __init__(self, dataroot='./data/nuscenes', version='v1.0-mini'):
         print(f"Loading nuScenes database from {dataroot}...")
         self.nusc    = NuScenes(version=version, dataroot=dataroot, verbose=False)
-        self.samples = self.nusc.sample[:15]
+        self.samples = self.nusc.sample[:5]
 
         self.transform = transforms.Compose([
             transforms.Resize((224, 480)),
@@ -248,7 +248,7 @@ def train_pipeline(
     print("Starting Training...")
     for epoch in range(num_epochs):
         for batch_idx, (images, intrinsics, trans, rot, gt_occupancy) in enumerate(dataloader):
-            if batch_idx >= 15:  # ← ADD THIS
+            if batch_idx >= 5:  # ← ADD THIS
                 break
             images     = images.to(device)
             intrinsics = intrinsics.to(device)
