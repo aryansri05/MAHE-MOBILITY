@@ -102,6 +102,7 @@ class LiftHead(nn.Module):
         )
         # 2. Depth distribution
         depth_dist = self.depth_head(feat_up).softmax(dim=1)  # (B, D, H, W)
+        self.last_depth_dist = depth_dist.detach()  # cache for visualization
         # 3. Outer product → (B, C, D, H, W)
         return feat_up.unsqueeze(2) * depth_dist.unsqueeze(1)
 
