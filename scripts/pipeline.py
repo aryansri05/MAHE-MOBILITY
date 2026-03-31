@@ -8,8 +8,14 @@ import torch.nn.functional as F
 import os
 import gc
 from typing import Optional, Tuple
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from PIL import Image
 from nuscenes.nuscenes import NuScenes
+try:
+    import bitsandbytes as bnb
+except ImportError:
+    bnb = None
 
 # ── internal modules ──────────────────────────────────
 from mahe_mobility.models.resnet_extractor import ResNetFeatureExtractor
@@ -21,40 +27,36 @@ from mahe_mobility.geometry.lss_core import (
     DepthPrecomputer,
 )
 from mahe_mobility.tasks.task1_lidar_to_occupancy import load_lidar_ego_frame, lidar_to_occupancy
-from mahe_mobility.models.occupancy import (
-    OccupancyCriterion,
-    occupancy_iou,
-    distance_weighted_error,
-    find_optimal_threshold,
-)
+from mahe_mobility.models.occupancy import OccupancyCriterion, occupancy_iou, distance_weighted_error
 from mahe_mobility.models.bev_occupancy import BEVOccupancyModel
 from mahe_mobility.config import X_MIN, X_MAX, Y_MIN, Y_MAX, RESOLUTION
 from mahe_mobility.dataset import NuScenesFrontCameraDataset
 
-# T4 VRAM shields
+# Set allocation config for stability on T4
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 # =============================================================
-#  Helper: quaternion (w,x,y,z) → 4×4 ego2cam matrix
+#  Helper: quaternion (w,x,y,z) → 3×3 rotation matrix
 # =============================================================
 
 def quat_to_rot(q: torch.Tensor) -> torch.Tensor:
+    """NuScenes quaternion (w,x,y,z) → (3,3) rotation matrix."""
     w, x, y, z = q[0], q[1], q[2], q[3]
     return torch.stack([
-        1 - 2*(y*y + z*z), 2*(x*y - z*w),   2*(x*z + y*w),
-        2*(x*y + z*w),   1 - 2*(x*x + z*z), 2*(y*z - x*w),
-        2*(x*z - y*w),   2*(y*z + x*w),   1 - 2*(x*x + y*y),
+        1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+        2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+        2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
     ]).reshape(3, 3)
 
 def build_ego2cam(translation: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
     R = quat_to_rot(rotation)
     cam2ego = torch.eye(4, dtype=torch.float32)
     cam2ego[:3, :3] = R
-    cam2ego[:3,  3] = translation
+    cam2ego[:3, 3] = translation
     return torch.linalg.inv(cam2ego)
 
 # =============================================================
-#  Lift Head
+#  Lift Head — 2-D features → depth-distributed frustum features
 # =============================================================
 
 class LiftHead(nn.Module):
@@ -67,10 +69,11 @@ class LiftHead(nn.Module):
     def forward(self, feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         feat_up = F.interpolate(feat, size=(self.img_h, self.img_w), mode="bilinear", align_corners=False)
         depth_dist = self.depth_head(feat_up).softmax(dim=1)
+        self.last_depth_dist = depth_dist.detach()
         return feat_up.unsqueeze(2) * depth_dist.unsqueeze(1), depth_dist
 
 # =============================================================
-#  BEVModel — Triple-Block Checkpointed
+#  BEVModel — Triple-Block Checkpointed forward
 # =============================================================
 
 class BEVModel(nn.Module):
@@ -84,121 +87,98 @@ class BEVModel(nn.Module):
         super().__init__()
         self.cam_cfg, self.bev_cfg, self.depth_cfg = cam_cfg, bev_cfg, depth_cfg
         self.feature_extractor = ResNetFeatureExtractor(out_channels=out_channels)
-        self.lift_head   = LiftHead(in_channels=out_channels, depth_cfg=depth_cfg, cam_cfg=cam_cfg)
-        self.geometry    = GeometryArchitect(cam_cfg, bev_cfg, depth_cfg, ego2cam=torch.eye(4))
+        self.lift_head = LiftHead(in_channels=out_channels, depth_cfg=depth_cfg, cam_cfg=cam_cfg)
+        self.geometry = GeometryArchitect(cam_cfg, bev_cfg, depth_cfg, ego2cam=torch.eye(4))
         self.occupancy_model = BEVOccupancyModel(lift_channels=out_channels)
 
     def forward(self, images, intrinsics, translation, rotation):
         device = images.device
-
-        # Block 1 — Backbone
-        feat_2d = torch.utils.checkpoint.checkpoint(
-            self.feature_extractor, images, use_reentrant=False
-        )
-
-        # Block 2 — Lift (depth prediction + frustum generation)
-        feat_3d, depth_probs = torch.utils.checkpoint.checkpoint(
-            self.lift_head, feat_2d, use_reentrant=False
-        )
-
-        # Block 3 — Geometry / Splat
-        def _splat(f3d, k, t, r):
-            e2c = build_ego2cam(t[0].cpu(), r[0].cpu()).to(device)
-            return self.geometry(f3d, k, e2c.unsqueeze(0).expand(f3d.shape[0], -1, -1))
-
-        bev_raw = torch.utils.checkpoint.checkpoint(
-            _splat, feat_3d, intrinsics, translation, rotation, use_reentrant=False
-        )
-
+        
+        # ── Triple-Block Checkpointing (Memory Safety) ────
+        def get_feat_2d(img):
+            return self.feature_extractor(img)
+            
+        feat_2d = torch.utils.checkpoint.checkpoint(get_feat_2d, images, use_reentrant=False)
+        
+        def get_frustum(f2d):
+            return self.lift_head(f2d)
+            
+        feat_3d, depth_probs = torch.utils.checkpoint.checkpoint(get_frustum, feat_2d, use_reentrant=False)
+        
+        def get_bev(f3d, k_mat, trans, rot):
+            e2c = build_ego2cam(trans[0].cpu(), rot[0].cpu()).to(device)
+            return self.geometry(f3d, k_mat, e2c.unsqueeze(0).expand(f3d.shape[0], -1, -1))
+            
+        bev_raw = torch.utils.checkpoint.checkpoint(get_bev, feat_3d, intrinsics, translation, rotation, use_reentrant=False)
+        
         logits = self.occupancy_model(bev_raw)
         return logits, depth_probs
 
 # =============================================================
-#  Training pipeline — IoU Surgery Edition
+#  Training pipeline
 # =============================================================
 
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 1,
-    accumulation_steps: int = 4,
+    batch_size: int = 1, 
+    accumulation_steps: int = 4, 
     num_epochs: int = 20,
     out_channels: int = 64,
 ):
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else ("mps" if torch.backends.mps.is_available() else "cpu")
-    )
-    print(f"\n🔪 IoU Surgery Pipeline | device={device} | eff_bs={batch_size*accumulation_steps}")
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+    print(f"\n🚀 Accuracy-First Deployment (Eff. BS: {batch_size * accumulation_steps})")
 
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    gc.collect()
-
-    cam_cfg   = CameraConfig(image_h=224, image_w=480)
-    bev_cfg   = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
-    depth_cfg = DepthConfig()   # 41 depth bins
+    cam_cfg = CameraConfig(image_h=224, image_w=480)
+    bev_cfg = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
+    depth_cfg = DepthConfig() # 41 steps
 
     full_dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=True)
-    val_full     = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=False)
-
+    val_full = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=False)
+    
     total_samples = len(full_dataset)
-    val_size, train_size = int(0.1 * total_samples), int(0.9 * total_samples)
+    val_size = int(0.1 * total_samples)
+    train_size = total_samples - val_size
 
-    train_dataset, _ = torch.utils.data.random_split(
-        full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
-    )
-    _, val_dataset = torch.utils.data.random_split(
-        val_full, [train_size, val_size], generator=torch.Generator().manual_seed(42)
-    )
+    train_dataset, _ = torch.utils.data.random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
+    _, val_dataset = torch.utils.data.random_split(val_full, [train_size, val_size], generator=torch.Generator().manual_seed(42))
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=2, pin_memory=True)
-    val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     model = BEVModel(out_channels=out_channels, cam_cfg=cam_cfg, bev_cfg=bev_cfg, depth_cfg=depth_cfg).to(device)
-
-    # IoU Surgery Loss Stack
-    criterion = OccupancyCriterion(
-        lambda_lovasz=1.0,    # PRIMARY: direct Jaccard optimisation
-        lambda_focal=0.5,     # hard-example mining
-        lambda_boundary=0.3,  # Sobel edge sharpening
-        lambda_bce=0.2,       # calibration anchor
-        lambda_depth=1.0,
-        lambda_tv=0.05,
-    ).to(device)
-
-    # ── VRAM Shield: 8-bit AdamW ─────────────────────────────────────
-    try:
-        import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=2e-4, weight_decay=1e-4)
-        print("✅ bitsandbytes 8-bit AdamW loaded (VRAM shield active)")
-    except ImportError:
-        print("⚠️  bitsandbytes not found — falling back to standard AdamW")
+    criterion = OccupancyCriterion(lambda_depth=1.0, lambda_tv=0.05).to(device)
+    
+    if bnb is not None:
+        print("💎 Using bitsandbytes 8-bit AdamW optimizer.")
+        optimizer = bnb.optim.Adam8bit(model.parameters(), lr=2e-4, weight_decay=1e-4)
+    else:
+        print("⚠️ bitsandbytes not found, falling back to standard AdamW.")
         optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
-
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
-    best_model_path      = "bev_model_best_surgery.pth"
-    latest_checkpoint    = "bev_model_latest.pth"
-    start_epoch, best_iou, best_threshold = 0, 0.0, 0.5
+    # Paths
+    best_model_path = "bev_model_best_v2.pth"
+    latest_checkpoint_path = "bev_model_latest.pth"
+    
+    start_epoch = 0
+    best_iou = 0.0
 
-    # Auto-resume
-    if os.path.exists(latest_checkpoint):
-        print(f"🔄 Resuming from {latest_checkpoint}...")
-        ckpt = torch.load(latest_checkpoint, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch    = ckpt["epoch"] + 1
-        best_iou       = ckpt.get("best_iou", 0.0)
-        best_threshold = ckpt.get("best_threshold", 0.5)
-        print(f"   Starting from epoch {start_epoch+1}, best IoU so far: {best_iou:.2f}%")
+    # 🔄 AUTO-RESUME Logic
+    if os.path.exists(latest_checkpoint_path):
+        print(f"🔄 Found existing checkpoint: {latest_checkpoint_path}. Resuming...")
+        checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_iou = checkpoint.get('best_iou', 0.0)
+        print(f"   Resuming from Epoch {start_epoch+1}")
 
-    print("\n📐 Loss Stack: Lovász + Focal + Sobel Boundary + BCE\n")
+    print("Starting Training Loop...")
     for epoch in range(start_epoch, num_epochs):
         model.train()
-        optimizer.zero_grad(set_to_none=True)   # "Exhale" protocol
-
+        optimizer.zero_grad(set_to_none=True)
+        
         for batch_idx, (images, intrinsics, trans, rot, gt_occ, gt_depth) in enumerate(train_loader):
             images, intrinsics = images.to(device), intrinsics.to(device)
             trans, rot = trans.to(device), rot.to(device)
@@ -216,9 +196,7 @@ def train_pipeline(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad(set_to_none=True)   # delete, not zero
-                    if (batch_idx + 1) % 60 == 0:
-                        torch.cuda.empty_cache()            # flush reserved trash
+                    optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
                 if (batch_idx + 1) % accumulation_steps == 0:
@@ -227,73 +205,69 @@ def train_pipeline(
                     optimizer.zero_grad(set_to_none=True)
 
             if (batch_idx + 1) % 10 == 0:
-                total_loss = loss.item() * accumulation_steps
-                print(
-                    f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] "
-                    f"loss={total_loss:.4f} | "
-                    f"lovász={loss_dict['lovasz_loss'].item():.4f} "
-                    f"boundary={loss_dict['boundary_loss'].item():.4f} "
-                    f"focal={loss_dict['focal_loss'].item():.4f}"
-                )
+                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} (Depth: {loss_dict['depth_loss']:.4f})")
 
-        # ── VALIDATION — Dynamic F1 Thresholding ───────────────────────
+        # --- VALIDATION (Dynamic Thresholding Hook) ---
         model.eval()
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-
-        all_probs, all_gt = [], []
+        thresholds = torch.linspace(0.1, 0.9, 9).to(device)
+        # Confusion matrix components for each threshold: [num_thresholds]
+        tps = torch.zeros(len(thresholds), device=device)
+        fps = torch.zeros(len(thresholds), device=device)
+        fns = torch.zeros(len(thresholds), device=device)
+        
         with torch.no_grad():
             for v_imgs, v_k, v_t, v_r, v_occ, v_depth in val_loader:
                 v_imgs, v_k = v_imgs.to(device), v_k.to(device)
-                v_t, v_r   = v_t.to(device), v_r.to(device)
+                v_t, v_r = v_t.to(device), v_r.to(device)
+                v_occ = v_occ.to(device).bool()
+                
                 with torch.amp.autocast("cuda", enabled=(scaler is not None)):
                     v_logits, _ = model(v_imgs, v_k, v_t, v_r)
-                all_probs.append(torch.sigmoid(v_logits).cpu())
-                all_gt.append(v_occ.cpu())
-
-        all_probs_t = torch.cat(all_probs, dim=0)  # (N, 1, H, W)
-        all_gt_t    = torch.cat(all_gt,    dim=0)
-
-        # Sweep 0.10 → 0.90 to find the F1-maximising threshold
-        best_threshold, best_f1 = find_optimal_threshold(all_probs_t, all_gt_t)
-
-        # Compute IoU at the dynamic threshold
-        pred_mask = (all_probs_t > best_threshold).bool()
-        avg_v_iou = occupancy_iou(pred_mask, all_gt_t.bool()).item() * 100
-
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-
-        print(
-            f"✅ Epoch {epoch+1} | Val IoU: {avg_v_iou:.2f}% | "
-            f"F1: {best_f1:.4f} @ threshold={best_threshold:.2f}"
-        )
-
-        scheduler.step()
-
-        # Save full checkpoint every epoch
+                    v_probs = torch.sigmoid(v_logits)
+                    
+                    for i, t in enumerate(thresholds):
+                        v_mask = v_probs > t
+                        tps[i] += (v_mask & v_occ).sum()
+                        fps[i] += (v_mask & ~v_occ).sum()
+                        fns[i] += (~v_mask & v_occ).sum()
+        
+        # Calculate F1 and IoU for all thresholds
+        precision = tps / (tps + fps + 1e-6)
+        recall = tps / (tps + fns + 1e-6)
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-6)
+        ious = tps / (tps + fps + fns + 1e-6)
+        
+        best_idx = torch.argmax(f1_scores)
+        opt_threshold = thresholds[best_idx].item()
+        max_f1 = f1_scores[best_idx].item()
+        best_iou_at_f1 = ious[best_idx].item() * 100
+        
+        print(f"✅ Epoch {epoch+1} complete.")
+        print(f"   🎯 Optimal Threshold: {opt_threshold:.2f} | Max F1: {max_f1:.4f} | IoU: {best_iou_at_f1:.2f}%")
+        
+        avg_v_iou = best_iou_at_f1 # Using IoU at optimal F1 for saving
+        
+        # 💾 SAVE FULL CHECKPOINT EVERY EPOCH
         torch.save({
-            "epoch":                epoch,
-            "model_state_dict":     model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "best_iou":             best_iou,
-            "best_threshold":       best_threshold,
-        }, latest_checkpoint)
-        print(f"💾 Checkpoint: {os.path.abspath(latest_checkpoint)}")
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_iou': best_iou,
+        }, latest_checkpoint_path)
+        print(f"💾 Saved latest checkpoint to: {os.path.abspath(latest_checkpoint_path)}")
 
         if avg_v_iou > best_iou:
             best_iou = avg_v_iou
             torch.save(model.state_dict(), best_model_path)
-            print(f"⭐ Best model saved → {os.path.abspath(best_model_path)} (IoU: {best_iou:.2f}%)")
+            print(f"⭐ New Best Model Saved to: {os.path.abspath(best_model_path)} (IoU: {best_iou:.2f}%)")
 
     return model
-
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataroot", type=str, default="./data/nuscenes")
-    parser.add_argument("--version",  type=str, default="v1.0-mini")
-    parser.add_argument("--epochs",   type=int, default=20)
+    parser.add_argument("--version", type=str, default="v1.0-mini")
+    parser.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args()
     train_pipeline(dataroot=args.dataroot, version=args.version, num_epochs=args.epochs)

@@ -91,12 +91,7 @@ class FrustumGenerator(nn.Module):
         uvone = torch.stack([uu, vv, ones], dim=0).reshape(3, -1)
         rays = K_inv @ uvone  # (3, H·W)
 
-        # ── Logarithmic Depth Binning ─────────────────────────────────
-        # Ultra-high near-field precision: ~0.3m at 4m, ~2m at 45m
-        # Formula: d_i = d_min * (d_max/d_min)^(i/(D-1))
-        depths = dcfg.d_min * (dcfg.d_max / dcfg.d_min) ** (
-            torch.arange(D, dtype=torch.float32) / (D - 1)
-        )
+        depths = torch.linspace(dcfg.d_min, dcfg.d_max, D)
         pts = rays.unsqueeze(0) * depths.reshape(D, 1, 1)  # (D, 3, H·W)
         pts = pts.permute(0, 2, 1).reshape(D, H, W, 3)
 
