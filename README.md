@@ -78,6 +78,13 @@ The pipeline implements a **Lift-Splat-Shoot (LSS)** architecture in four sequen
   • Bias init: sigmoid(−4.6) ≈ 0.01 ("predict empty" prior)
          │
          ▼
+[Stage 5 — Loss Function: Combined Focal + Dice Loss]
+  To handle the extreme class imbalance (free space >> occupied cells), we use a weighted combination of:
+- Focal Loss: Heavily penalizes false negatives, forcing the model to detect small/hard objects.
+- Dice Loss: Directly optimizes for IoU overlap, ensuring the predicted shapes are accurate.
+         │
+         ▼
+ 
 [Output: 250×250 occupancy grid | 0 = free space | 1 = occupied]
 ```
 
