@@ -255,12 +255,12 @@ MAHE-MOBILITY/
 
 ## Team
 
-| Name | Role |
-|------|------|
-| Shivansh Srivastava | Team Lead — model architecture & pipeline |
-| Riddhi Jain | CNN design, segmentation, FP16 inference |
-| Shadman Nishat | nuScenes pipeline, label generation |
-| Aryan Srivastava | View transformers, spatial geometry, evaluation |
+| Name |
+|------|
+| Shivansh Srivastava | 
+| Riddhi Jain |
+| Shadman Nishat |
+| Aryan Srivastava |
 
 ---
 
