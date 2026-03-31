@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend — safe for Kaggle/headless servers
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -360,19 +362,19 @@ def train_pipeline(
         print(f"💾 [Checkpoint] Saved end-of-epoch checkpoint for epoch {epoch + 1} (LR: {scheduler.get_last_lr()[0]:.6f})")
 
     print("\n✅ Training complete.")
-    
-    # Generate visualization for the last batch
+
+    # Generate visualization from the last validation batch
     print("Generating post-training visualizations...")
     try:
         from mahe_mobility.tasks.task3_evaluation_iou import visualise_error_map
-        # Take the first sample from the batch to visualize
-        pred_probs = torch.sigmoid(bev_logits[0, 0]).detach().cpu().numpy()
-        gt = gt_occupancy[0, 0].detach().cpu().numpy()
-        
+        # Use the last val batch for a clean, unbiased visualization
+        pred_probs = torch.sigmoid(v_logits[0, 0]).detach().cpu().numpy()
+        gt = v_gt[0, 0].detach().cpu().numpy()
+
         visualise_error_map(pred_probs, gt, save_path="pipeline_result.png")
         print("✅ Visualization saved to pipeline_result.png")
     except Exception as e:
-        print(f"Failed to generate visualize image: {e}")
+        print(f"Failed to generate visualization: {e}")
         
     # --- ADDED: EXPORT MODEL WEIGHTS ---
     torch.save(model.state_dict(), "bev_model_final_v2.pth")
