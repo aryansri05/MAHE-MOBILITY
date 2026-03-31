@@ -106,10 +106,12 @@ def run_evaluation(sample_idx=None, save_path="hackathon_final_plot.png", weight
 
     nusc = dataset.nusc
     sample_data = dataset.samples[sample_idx]
-    img_t, intrinsics, trans, rot, gt_occ = dataset[sample_idx]
+    # Dataset now returns 6 items
+    img_t, intrinsics, trans, rot, gt_occ, gt_depth = dataset[sample_idx]
 
     with torch.no_grad():
-        bev_logits = model(
+        # Model now returns (logits, depth_probs)
+        bev_logits, _ = model(
             img_t.unsqueeze(0).to(device),
             intrinsics.unsqueeze(0).to(device),
             trans.unsqueeze(0).to(device),
@@ -122,6 +124,7 @@ def run_evaluation(sample_idx=None, save_path="hackathon_final_plot.png", weight
     pred_probs = torch.sigmoid(bev_logits[0, 0]).cpu().numpy()
     pred_bin = (pred_probs > OCC_THRESHOLD).astype(float)
     gt = gt_occ[0].numpy()
+    gt_d_map = gt_depth.numpy() # (H, W) where 1+ is bin index
 
     intersection = np.logical_and(pred_bin > 0.5, gt > 0.5).sum()
     union = np.logical_or(pred_bin > 0.5, gt > 0.5).sum()
@@ -156,9 +159,10 @@ def run_evaluation(sample_idx=None, save_path="hackathon_final_plot.png", weight
     fig = plt.figure(figsize=(24, 11), facecolor="#0a0a14")
     gs = gridspec.GridSpec(2, 12, figure=fig, hspace=0.45, wspace=0.35, left=0.04, right=0.97, top=0.91, bottom=0.06)
 
-    ax_cam = fig.add_subplot(gs[0, 0:4])
-    ax_depth = fig.add_subplot(gs[0, 4:8])
-    ax_bev = fig.add_subplot(gs[0, 8:12])
+    ax_cam = fig.add_subplot(gs[0, 0:3])
+    ax_depth = fig.add_subplot(gs[0, 3:6])
+    ax_depth_gt = fig.add_subplot(gs[0, 6:9]) # New Panel
+    ax_bev = fig.add_subplot(gs[0, 9:12])
     ax_gt = fig.add_subplot(gs[1, 0:3])
     ax_prob = fig.add_subplot(gs[1, 3:6])
     ax_bin = fig.add_subplot(gs[1, 6:9])
@@ -177,8 +181,15 @@ def run_evaluation(sample_idx=None, save_path="hackathon_final_plot.png", weight
         im1 = ax_depth.imshow(depth_map, cmap="plasma", vmin=depth_cfg.d_min, vmax=depth_cfg.d_max)
         cb1 = plt.colorbar(im1, ax=ax_depth, fraction=0.035, pad=0.03)
         cb1.ax.tick_params(colors="white", labelsize=7)
-    style_ax(ax_depth, "Depth Map (metres)")
+    style_ax(ax_depth, "Predicted Depth (LSS Head)")
     ax_depth.axis("off")
+
+    # New Depth GT Panel
+    im_gt_d = ax_depth_gt.imshow(gt_d_map, cmap="plasma", vmin=0, vmax=depth_cfg.d_steps)
+    cb_gt_d = plt.colorbar(im_gt_d, ax=ax_depth_gt, fraction=0.035, pad=0.03)
+    cb_gt_d.ax.tick_params(colors="white", labelsize=7)
+    style_ax(ax_depth_gt, "Ground Truth Depth (LiDAR Projection)")
+    ax_depth_gt.axis("off")
 
     ax_bev.set_facecolor("#040408")
     orows, ocols = np.where(pred_bin > 0.5)

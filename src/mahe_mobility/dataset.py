@@ -1,80 +1,97 @@
 import torch
-import torch.nn as nn
+import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.geometry_utils import view_points
 from torchvision import transforms
 from mahe_mobility.tasks.task1_lidar_to_occupancy import load_lidar_ego_frame, lidar_to_occupancy
+from mahe_mobility.geometry.lss_core import DepthConfig, CameraConfig
 
-
-# ── Custom transform: Gaussian noise injected after ToTensor ─────────────────
+# --- Shared Transforms & Noise ---
 class AddGaussianNoise:
-    """
-    Adds random Gaussian noise to a tensor image.
-    Simulates sensor noise, low-light grain, and camera artifacts.
-    Applied after ToTensor so input is a float tensor in [0, 1].
-    """
     def __init__(self, mean: float = 0.0, std: float = 0.03):
-        self.mean = mean
-        self.std = std
-
+        self.mean, self.std = mean, std
     def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
         noise = torch.randn_like(tensor) * self.std + self.mean
         return torch.clamp(tensor + noise, 0.0, 1.0)
 
-    def __repr__(self):
-        return f"AddGaussianNoise(mean={self.mean}, std={self.std})"
+_IMAGENET_NORMALIZE = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-
-# ── Normalization (shared between train and val) ──────────────────────────────
-_IMAGENET_NORMALIZE = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-)
-
-# ── Training transform — aggressive augmentation for robustness ───────────────
 _TRAIN_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 480)),
-
-    # --- Lighting & Colour ---
-    transforms.ColorJitter(
-        brightness=0.5,   # handles day/night extremes
-        contrast=0.5,     # handles fog, overcast, glare
-        saturation=0.4,   # handles colour shifts
-        hue=0.1,          # slight hue shift
-    ),
-    transforms.RandomGrayscale(p=0.1),  # forces model to work without colour (e.g. night/IR)
-    transforms.RandomAutocontrast(p=0.3),  # simulates camera auto-exposure adjustments
-
-    # --- Blur & Sharpness (simulates focus issues / rain on lens) ---
-    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
-
+    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
     transforms.ToTensor(),
-
-    # --- Noise (simulates sensor/thermal/dark-current noise) ---
-    AddGaussianNoise(mean=0.0, std=0.03),
-
+    AddGaussianNoise(std=0.02),
     _IMAGENET_NORMALIZE,
 ])
 
-# ── Validation transform — no augmentation, clean baseline ───────────────────
 _VAL_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 480)),
     transforms.ToTensor(),
     _IMAGENET_NORMALIZE,
 ])
 
-
 class NuScenesFrontCameraDataset(Dataset):
     def __init__(self, dataroot="./data/nuscenes", version="v1.0-mini", train: bool = True):
         self.nusc = NuScenes(version=version, dataroot=dataroot, verbose=False)
         self.samples = self.nusc.sample
         self.transform = _TRAIN_TRANSFORM if train else _VAL_TRANSFORM
-
+        self.depth_cfg = DepthConfig() # Uses default d_min, d_max, d_steps
+        self.cam_cfg = CameraConfig(image_h=224, image_w=480)
+        
+        # Accuracy Push: BEV-space augmentation settings
+        self.is_train = train
+        self.aug_rot_range = [-15, 15]  # degrees
+        self.aug_scale_range = [0.95, 1.05]
+        
         mode = "training" if train else "validation"
         print(f"✅ NuScenes Dataset Ready: Found {len(self.samples)} samples [{mode} mode]")
 
     def __len__(self):
         return len(self.samples)
+
+    def get_depth_gt(self, pts_ego, intrinsic, translation, rotation):
+        """Projects LiDAR points to Image and creates binned depth GT."""
+        # 1. Transform Ego -> Cam
+        from pyquaternion import Quaternion
+        quat = Quaternion(rotation.numpy())
+        cam2ego = np.eye(4)
+        cam2ego[:3, :3] = quat.rotation_matrix
+        cam2ego[:3, 3] = translation.numpy()
+        ego2cam = np.linalg.inv(cam2ego)
+        
+        # pts_ego is (N, 3). Convert to (3, N)
+        pts_cam = np.dot(ego2cam[:3, :3], pts_ego.T) + ego2cam[:3, 3:4]
+        
+        # 2. Project to Image
+        pts_img = view_points(pts_cam, intrinsic.numpy(), normalize=True)
+        
+        # 3. Filter points
+        mask = np.ones(pts_img.shape[1], dtype=bool)
+        mask &= (pts_cam[2, :] > self.depth_cfg.d_min)
+        mask &= (pts_cam[2, :] < self.depth_cfg.d_max)
+        mask &= (pts_img[0, :] >= 0)
+        mask &= (pts_img[0, :] < self.cam_cfg.image_w)
+        mask &= (pts_img[1, :] >= 0)
+        mask &= (pts_img[1, :] < self.cam_cfg.image_h)
+        
+        depths = pts_cam[2, mask]
+        coords = pts_img[:2, mask].astype(int)
+        
+        # 4. Create Depth Map
+        depth_gt = torch.zeros((self.cam_cfg.image_h, self.cam_cfg.image_w))
+        
+        # Depth d maps to bin = floor((d - d_min) / d_step)
+        # d_step = (d_max - d_min) / (d_steps - 1)
+        d_step = (self.depth_cfg.d_max - self.depth_cfg.d_min) / (self.depth_cfg.d_steps - 1)
+        
+        bin_indices = np.floor((depths - self.depth_cfg.d_min) / d_step).astype(int)
+        bin_indices = np.clip(bin_indices, 0, self.depth_cfg.d_steps - 1)
+        
+        depth_gt[coords[1], coords[0]] = torch.tensor(bin_indices).float() + 1 # 0 is 'no point'
+        
+        return depth_gt
 
     def __getitem__(self, idx):
         my_sample = self.samples[idx]
@@ -95,7 +112,45 @@ class NuScenesFrontCameraDataset(Dataset):
 
         sample_token = my_sample["token"]
         pts_ego = load_lidar_ego_frame(self.nusc, sample_token)
+        
+        # ── Accuracy Push: BEV-Space Augmentation ───────────────────
+        if self.is_train:
+            # 1. Sample random rotation and scale
+            rot_deg = np.random.uniform(*self.aug_rot_range)
+            scale = np.random.uniform(*self.aug_scale_range)
+            
+            rot_rad = np.radians(rot_deg)
+            cos_r, sin_r = np.cos(rot_rad), np.sin(rot_rad)
+            
+            # Rotation matrix for BEV (XY plane)
+            # R_aug rotates the world/lidar points. 
+            R_aug = np.array([
+                [cos_r * scale, -sin_r * scale, 0],
+                [sin_r * scale,  cos_r * scale, 0],
+                [0,              0,             1]
+            ])
+            
+            # 2. Transform LiDAR points (Ego frame)
+            pts_ego = (R_aug @ pts_ego.T).T
+            
+            # 3. SYNC: Update Extrinsics for the LSS model
+            # Formula: R_new = R_ext * R_aug_inv = R_ext * R_aug.T (for pure rotation)
+            from pyquaternion import Quaternion
+            q_ext = Quaternion(rotation.numpy())
+            R_ext_mat = q_ext.rotation_matrix
+            
+            # Note: We only need the 3x3 rotation part of R_aug
+            R_new_mat = R_ext_mat @ R_aug.T
+            rotation = torch.tensor(Quaternion(matrix=R_new_mat).elements).float()
+            
+            # Sync translation: t_new = t_old (rotation around ego origin)
+            # If we add shifting, we'd add delta-t here.
+        
+        # Generate Depth GT (Uses the potentially augmented pts_ego)
+        gt_depth = self.get_depth_gt(pts_ego, intrinsic, translation, rotation)
+        
+        # Generate BEV Occupancy (Uses the potentially augmented pts_ego)
         gt_occupancy = lidar_to_occupancy(pts_ego)
         gt_occupancy_tensor = torch.tensor(gt_occupancy, dtype=torch.float32).unsqueeze(0)
 
-        return image_tensor, intrinsic, translation, rotation, gt_occupancy_tensor
+        return image_tensor, intrinsic, translation, rotation, gt_occupancy_tensor, gt_depth
