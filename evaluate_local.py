@@ -20,12 +20,14 @@ from mahe_mobility.dataset import NuScenesFrontCameraDataset
 from mahe_mobility.tasks.task3_evaluation_iou import visualise_error_map
 from pipeline import BEVModel
 
-WEIGHTS = "bev_model_final_v2 (1).pth"  # Best ResNet34 model from Kaggle training
+WEIGHTS = "bev_model_final_v2 (1).pth"
 
 
 def run_final_evaluation():
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"🧠 Loading trained model onto {device} from '{WEIGHTS}'...")
+    import os
+    weights_abs = os.path.join(os.path.dirname(os.path.abspath(__file__)), WEIGHTS)
+    print(f"🧠 Loading trained model onto {device} from '{weights_abs}'...")
 
     cam_cfg   = CameraConfig(image_h=224, image_w=480)
     bev_cfg   = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
@@ -33,7 +35,7 @@ def run_final_evaluation():
     model     = BEVModel(out_channels=64, cam_cfg=cam_cfg, bev_cfg=bev_cfg, depth_cfg=depth_cfg)
 
     # bev_model_best_v2.pth is saved as a plain state_dict (not a checkpoint dict)
-    checkpoint = torch.load(WEIGHTS, map_location=device, weights_only=False)
+    checkpoint = torch.load(weights_abs, map_location=device, weights_only=False)
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
