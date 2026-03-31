@@ -232,13 +232,13 @@ To clone this specific experimental branch (with Lovász-Softmax and 8-bit optim
 # In a Kaggle notebook cell:
 !rm -rf MAHE-MOBILITY
 !git clone -b experiment https://github.com/aryansri05/MAHE-MOBILITY
+# Cell 2: Install dependencies & execute training
 %cd MAHE-MOBILITY
-!pip install nuscenes-devkit pyquaternion bitsandbytes -q
-
-!python scripts/pipeline.py \
-    --dataroot /path/to/nuscenes \
-    --version v1.0-mini \
-    --epochs 20
+!pip install -r requirements.txt -q
+!PYTHONPATH=src python scripts/pipeline.py \
+    --dataroot "/kaggle/input/datasets/invisibleos/v1-0-mini" \
+    --version "v1.0-mini" \
+    --epochs 10
 ```
 
 The script automatically:
