@@ -203,27 +203,7 @@ That's it. The script will:
 ## 6. Example Outputs / Results
 
 ### Terminal output
-
-```
-🧠 Loading trained model onto mps from 'bev_model_best_v2.pth'...
-✅ Weights loaded successfully!
-✅ NuScenes Dataset Ready: Found 404 samples [validation mode]
-📸 Running inference on a random test sample...
-  Loaded 34,720 LiDAR points (ego frame).
-  After Z filter: 21,194 points remain.
-  After XY filter: 10,416 points in grid area.
-  Grid shape: (250, 250)  |  3.8% occupied.
-
-📊 FINAL METRICS:
-   IoU Score  : 27.51%
-   Precision  : 0.5301
-   Recall     : 1.0000
-   F1 Score   : 0.6929
-   DWE        : 0.0054  (lower is better)
-
-✅ Diagnostic plot saved as 'hackathon_final_plot.png'
-```
-
+[**EXAMPLE OUTPUT**](Example_output.jpg)
 ### What the metrics mean
 
 | Metric | Score | Interpretation |
