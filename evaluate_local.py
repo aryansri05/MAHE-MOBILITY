@@ -6,6 +6,7 @@ Outputs the IoU score and saves a 4-panel diagnostic plot.
 """
 
 import sys
+from scipy.ndimage import binary_erosion
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -50,12 +51,21 @@ def run_final_evaluation():
         images, intrinsics, trans, rot, gt_occupancy = next(iter(dataloader))
         images = images.to(device)
 
-        bev_logits = model(images, intrinsics.to(device), trans.to(device), rot.to(device))
+        # AMP: float16 on CUDA for speed boost, no-op on CPU/MPS
+        autocast_ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16) \
+            if device.type == 'cuda' else torch.amp.autocast(device_type='cpu', enabled=False)
+
+        with autocast_ctx:
+            bev_logits = model(images, intrinsics.to(device), trans.to(device), rot.to(device))
+        bev_logits = bev_logits.float()  # cast back to float32 for metric computation
 
         pred_probs  = torch.sigmoid(bev_logits[0, 0]).cpu().numpy()
         gt          = gt_occupancy[0, 0].cpu().numpy()
 
-        preds_binary = (pred_probs > 0.5).astype(int)
+        preds_binary = (pred_probs > 0.5).astype(np.uint8)
+        # Morphological erosion: strips thin false-positive edges, keeps dense confident regions
+        kernel = np.ones((3, 3), bool)
+        preds_binary = binary_erosion(preds_binary, structure=kernel).astype(np.uint8)
         gt_binary    = gt.astype(int)
 
         intersection = np.logical_and(preds_binary, gt_binary).sum()
