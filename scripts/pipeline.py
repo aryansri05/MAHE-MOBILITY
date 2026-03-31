@@ -108,7 +108,7 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 2,  # Reduced from 4 due to OOM
+    batch_size: int = 8,  # Increased to 8 per user request
     num_epochs: int = 1,
     out_channels: int = 64,
 ):
