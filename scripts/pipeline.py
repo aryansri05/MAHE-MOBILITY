@@ -195,7 +195,7 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 8,  # INCREASED TO 8 FOR KAGGLE GPU
+    batch_size: int = 4,
     num_epochs: int = 1,
     out_channels: int = 64,
 ):
