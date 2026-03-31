@@ -364,7 +364,7 @@ def train_pipeline(
                 
                 v_logits = model(v_images, v_intrinsics, v_trans, v_rot)
                 v_probs = torch.sigmoid(v_logits)
-                val_loss += criterion(v_probs, v_gt.float()).item()
+                val_loss += (criterion_focal(v_probs, v_gt.float()) + criterion_dice(v_probs, v_gt.float())).item()
                 v_mask = v_probs > 0.5
                 val_iou += occupancy_iou(v_mask, v_gt.bool()).item()
                 val_dwe += distance_weighted_error(v_probs, v_gt).item()
