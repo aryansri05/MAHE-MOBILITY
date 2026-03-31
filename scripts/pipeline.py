@@ -89,11 +89,13 @@ class BEVModel(nn.Module):
         feat_2d = self.feature_extractor(images)
         feat_3d, depth_probs = self.lift_head(feat_2d)
         
-        # Generate extrinsic for this batch
+        # Scale handling: build batch of ego2cam
+        # Note: We take index 0 assuming a uniform rig for the batch (standard).
+        # We wrap it in a lookup-table check inside geometry.
         ego2cam = build_ego2cam(translation[0].cpu(), rotation[0].cpu()).to(device)
         
-        # Geometry pool utilizes the internal cache now! (Faster training)
-        # Note: we pass intrinsic and ego2cam/extrinsic as tensors
+        # Geometry pool utilizes the internal cache now! 
+        # Pass (B, ...) tensors
         bev_raw = self.geometry(feat_3d, intrinsics, ego2cam.unsqueeze(0).expand(feat_3d.shape[0], -1, -1))
         
         logits = self.occupancy_model(bev_raw)
@@ -106,12 +108,12 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 4,
+    batch_size: int = 2,  # Reduced from 4 due to OOM
     num_epochs: int = 1,
     out_channels: int = 64,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    print(f"\n🚀 Accuracy Push: Initializing Pipeline on: {device}")
+    print(f"\n🚀 OOM-Safe Initialization: Running on {device} (Batch Size: {batch_size})")
 
     cam_cfg = CameraConfig(image_h=224, image_w=480)
     bev_cfg = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
@@ -131,18 +133,19 @@ def train_pipeline(
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     model = BEVModel(out_channels=out_channels, cam_cfg=cam_cfg, bev_cfg=bev_cfg, depth_cfg=depth_cfg).to(device)
-    
-    # Updated Criterion with Depth-axis TV loss sharpening
     criterion = OccupancyCriterion(lambda_depth=1.0, lambda_tv=0.05).to(device)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    
+    # ── Accuracy Push: Mixed-Precision (AMP) for Memory Saving ──
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     checkpoint_path = "bev_checkpoint_v2.pth"
     best_model_path = "bev_model_best_v2.pth"
     start_epoch, best_iou = 0, 0.0
 
-    print("Starting Training with TV Sharpening & Geometry Cache...")
+    print("Starting Training with AMP and Reduced Batch Size...")
     for epoch in range(start_epoch, num_epochs):
         model.train()
         for batch_idx, (images, intrinsics, trans, rot, gt_occ, gt_depth) in enumerate(train_loader):
@@ -150,25 +153,39 @@ def train_pipeline(
             trans, rot = trans.to(device), rot.to(device)
             gt_occ, gt_depth = gt_occ.to(device), gt_depth.to(device)
 
-            logits, pred_depth = model(images, intrinsics, trans, rot)
-            loss_dict = criterion(logits, gt_occ.float(), pred_depth, gt_depth)
-            loss = loss_dict["loss"]
-
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
-            optimizer.step()
+            
+            # --- Auto-Mixed-Precision Context ---
+            with torch.amp.autocast("cuda", enabled=(scaler is not None)):
+                logits, pred_depth = model(images, intrinsics, trans, rot)
+                loss_dict = criterion(logits, gt_occ.float(), pred_depth, gt_depth)
+                loss = loss_dict["loss"]
+
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
+                optimizer.step()
 
             if (batch_idx + 1) % 10 == 0:
-                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] L: {loss.item():.4f} (Depth: {loss_dict['depth_loss']:.4f}, TV: {loss_dict['depth_tv_loss']:.4f})")
+                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item():.4f} (Depth: {loss_dict['depth_loss']:.4f}, TV: {loss_dict['depth_tv_loss']:.4f})")
 
         # --- VALIDATION ---
         model.eval()
         v_iou = 0.0
         with torch.no_grad():
             for v_imgs, v_k, v_t, v_r, v_occ, v_depth in val_loader:
-                v_logits, _ = model(v_imgs.to(device), v_k.to(device), v_t.to(device), v_r.to(device))
-                v_mask = torch.sigmoid(v_logits) > 0.5
+                v_imgs, v_k = v_imgs.to(device), v_k.to(device)
+                v_t, v_r = v_t.to(device), v_r.to(device)
+                
+                with torch.amp.autocast("cuda", enabled=(scaler is not None)):
+                    v_logits, _ = model(v_imgs, v_k, v_t, v_r)
+                    v_mask = torch.sigmoid(v_logits) > 0.5
                 v_iou += occupancy_iou(v_mask, v_occ.to(device).bool()).item()
         
         avg_v_iou = (v_iou / len(val_loader)) * 100
