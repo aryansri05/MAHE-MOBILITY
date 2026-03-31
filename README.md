@@ -1,6 +1,6 @@
 <div align="center">
 
-# MAHE-MOBILITY: Camera-to-BEV Occupancy Pipeline
+# EAGLE'S EYE
 ### MAHE Mobility Hackathon 2026 · Track 01 · PS3
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
