@@ -220,11 +220,12 @@ def train_pipeline(
             'optimizer_state_dict': optimizer.state_dict(),
             'best_iou': best_iou,
         }, latest_checkpoint_path)
+        print(f"💾 Saved latest checkpoint to: {os.path.abspath(latest_checkpoint_path)}")
 
         if avg_v_iou > best_iou:
             best_iou = avg_v_iou
             torch.save(model.state_dict(), best_model_path)
-            print(f"⭐ New Best Model Saved (IoU: {best_iou:.2f}%)")
+            print(f"⭐ New Best Model Saved to: {os.path.abspath(best_model_path)} (IoU: {best_iou:.2f}%)")
 
     return model
 
