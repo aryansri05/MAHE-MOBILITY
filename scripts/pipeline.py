@@ -32,7 +32,24 @@ from mahe_mobility.dataset import NuScenesFrontCameraDataset
 # =============================================================
 #  Helper: quaternion (w,x,y,z) → 3×3 rotation matrix
 # =============================================================
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.85, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
 
+    def forward(self, inputs, targets):
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        inputs = torch.clamp(inputs, 1e-6, 1.0 - 1e-6)
+        bce = - (targets * torch.log(inputs) + (1 - targets) * torch.log(1 - inputs))
+        pt = torch.where(targets == 1, inputs, 1 - inputs)
+        focal_weight = (1 - pt) ** self.gamma
+        alpha_weight = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+        loss = alpha_weight * focal_weight * bce
+        if self.reduction == 'mean': return loss.mean()
+        return loss.sum()
 
 def quat_to_rot(q: torch.Tensor) -> torch.Tensor:
     """NuScenes quaternion (w,x,y,z) → (3,3) rotation matrix."""
@@ -242,14 +259,7 @@ def train_pipeline(
         out_channels=out_channels, cam_cfg=cam_cfg, bev_cfg=bev_cfg, depth_cfg=depth_cfg
     ).to(device)
 
-    # Replaced basic loss with Focal + Distance Weighted BCE
-    criterion = OccupancyCriterion(
-        focal_alpha=0.25,
-        focal_gamma=2.0,
-        pos_weight=20.0,
-        lambda_focal=1.0,
-        lambda_bce=0.5,
-    ).to(device)
+    criterion = FocalLoss(alpha=0.85, gamma=2.0).to(device)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
@@ -285,9 +295,9 @@ def train_pipeline(
             # Forward — correctly passes all 4 args into BEVModel.forward()
             bev_logits = model(images, intrinsics, trans, rot)
 
-            # Replaced dummy loss with OccupancyCriterion (Focal Loss + DistWeighted BCE)
-            loss_dict = criterion(bev_logits, gt_occupancy.float())
-            loss = loss_dict["loss"]
+            # FocalLoss expects probabilities
+            probs_for_loss = torch.sigmoid(bev_logits)
+            loss = criterion(probs_for_loss, gt_occupancy.float())
 
             optimizer.zero_grad()
             loss.backward()
@@ -303,8 +313,7 @@ def train_pipeline(
             print(
                 f"  Epoch [{epoch + 1}/{num_epochs}] "
                 f"Batch [{batch_idx + 1}/{len(train_loader)}] "
-                f"Loss: {loss.item():.4f} "
-                f"(Focal: {loss_dict['focal_loss']:.4f}, BCE: {loss_dict['bce_loss']:.4f})  "
+                f"Loss: {loss.item():.4f}  "
                 f"Train-IoU: {iou.item()*100:.2f}%"
             )
 
@@ -333,10 +342,8 @@ def train_pipeline(
                 v_gt = v_gt.to(device)
                 
                 v_logits = model(v_images, v_intrinsics, v_trans, v_rot)
-                v_loss_dict = criterion(v_logits, v_gt.float())
-                val_loss += v_loss_dict["loss"].item()
-                
                 v_probs = torch.sigmoid(v_logits)
+                val_loss += criterion(v_probs, v_gt.float()).item()
                 v_mask = v_probs > 0.5
                 val_iou += occupancy_iou(v_mask, v_gt.bool()).item()
                 val_dwe += distance_weighted_error(v_probs, v_gt).item()
