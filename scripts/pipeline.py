@@ -185,10 +185,11 @@ def train_pipeline(
                 mem_used = torch.cuda.max_memory_allocated() / 1024**3 if device.type=="cuda" else 0
                 print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} (Depth: {loss_dict['depth_loss']:.4f}) | peak: {mem_used:.2f}GB")
 
-            # 💾 ACCURACY PUSH: Frequent Model Checkpointing
-            if (batch_idx + 1) % 20 == 0:
+            # 💾 ACCURACY PUSH: Frequent Model Checkpointing (Every Batch)
+            if (batch_idx + 1) % 1 == 0:
                 torch.save({
                     'epoch': epoch,
+                    'batch_idx': batch_idx,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_iou': best_iou,
