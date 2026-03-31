@@ -55,6 +55,20 @@ class FocalLoss(nn.Module):
         if self.reduction == 'mean': return loss.mean()
         return loss.sum()
 
+
+class DiceLoss(nn.Module):
+    """Dice Loss — directly optimizes for IoU/F1 overlap."""
+    def __init__(self, smooth=1.0):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        intersection = (inputs * targets).sum()
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
+        return 1 - dice
+
 def quat_to_rot(q: torch.Tensor) -> torch.Tensor:
     """NuScenes quaternion (w,x,y,z) → (3,3) rotation matrix."""
     w, x, y, z = q[0], q[1], q[2], q[3]
@@ -263,7 +277,8 @@ def train_pipeline(
         out_channels=out_channels, cam_cfg=cam_cfg, bev_cfg=bev_cfg, depth_cfg=depth_cfg
     ).to(device)
 
-    criterion = FocalLoss(alpha=0.85, gamma=2.0).to(device)
+    criterion_focal = FocalLoss(alpha=0.85, gamma=2.0).to(device)
+    criterion_dice  = DiceLoss(smooth=1.0).to(device)
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
@@ -299,9 +314,10 @@ def train_pipeline(
             # Forward — correctly passes all 4 args into BEVModel.forward()
             bev_logits = model(images, intrinsics, trans, rot)
 
-            # FocalLoss expects probabilities
+            # Combined Focal + Dice loss: Focal finds the car, Dice shapes it
             probs_for_loss = torch.sigmoid(bev_logits)
-            loss = criterion(probs_for_loss, gt_occupancy.float())
+            loss = criterion_focal(probs_for_loss, gt_occupancy.float()) \
+                 + criterion_dice(probs_for_loss, gt_occupancy.float())
 
             optimizer.zero_grad()
             loss.backward()
