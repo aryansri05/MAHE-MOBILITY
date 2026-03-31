@@ -26,13 +26,13 @@ from nuscenes.utils.geometry_utils import transform_matrix
 from pyquaternion import Quaternion
 
 # ── Shared config ─────────────────────────────────────────────────
-from config import (X_MIN, X_MAX, Y_MIN, Y_MAX,
-                    RESOLUTION, GRID_W, GRID_H, Z_MIN, Z_MAX)
+from mahe_mobility.config import X_MIN, X_MAX, Y_MIN, Y_MAX, RESOLUTION, GRID_W, GRID_H, Z_MIN, Z_MAX
 
 
 # ═════════════════════════════════════════════════════════════════
 # STEP 1 — Load nuScenes and pick a sample
 # ═════════════════════════════════════════════════════════════════
+
 
 def load_nuscenes(dataroot: str, version: str = "v1.0-mini"):
     """
@@ -55,6 +55,7 @@ def load_nuscenes(dataroot: str, version: str = "v1.0-mini"):
 # STEP 2 — Load LiDAR points and transform to ego frame
 # ═════════════════════════════════════════════════════════════════
 
+
 def load_lidar_ego_frame(nusc: NuScenes, sample_token: str) -> np.ndarray:
     """
     Load the LiDAR point cloud for one sample and return points
@@ -76,29 +77,26 @@ def load_lidar_ego_frame(nusc: NuScenes, sample_token: str) -> np.ndarray:
 
     # ── Get the LiDAR sensor data record ─────────────────────────
     lidar_token = sample["data"]["LIDAR_TOP"]
-    lidar_data  = nusc.get("sample_data", lidar_token)
+    lidar_data = nusc.get("sample_data", lidar_token)
 
     # ── Load raw point cloud (.bin) ───────────────────────────────
     # Each point: [X, Y, Z, intensity]  (sensor frame)
-    pc = LidarPointCloud.from_file(
-        os.path.join(nusc.dataroot, lidar_data["filename"])
-    )
+    pc = LidarPointCloud.from_file(os.path.join(nusc.dataroot, lidar_data["filename"]))
     # pc.points shape: (4, N)  — rows are X, Y, Z, intensity
 
     # ── Build sensor-to-ego transform matrix ─────────────────────
-    cs_record   = nusc.get("calibrated_sensor",
-                            lidar_data["calibrated_sensor_token"])
-    sensor2ego  = transform_matrix(
-        translation = cs_record["translation"],
-        rotation    = Quaternion(cs_record["rotation"]),
-        inverse     = False,
+    cs_record = nusc.get("calibrated_sensor", lidar_data["calibrated_sensor_token"])
+    sensor2ego = transform_matrix(
+        translation=cs_record["translation"],
+        rotation=Quaternion(cs_record["rotation"]),
+        inverse=False,
     )  # shape (4, 4)
 
     # ── Apply transform ───────────────────────────────────────────
-    pc.transform(sensor2ego)          # modifies pc.points in-place
+    pc.transform(sensor2ego)  # modifies pc.points in-place
 
     # Return (N, 3) — drop intensity column
-    pts_ego = pc.points[:3, :].T      # shape (N, 3)
+    pts_ego = pc.points[:3, :].T  # shape (N, 3)
     print(f"  Loaded {len(pts_ego):,} LiDAR points (ego frame).")
     return pts_ego
 
@@ -106,6 +104,7 @@ def load_lidar_ego_frame(nusc: NuScenes, sample_token: str) -> np.ndarray:
 # ═════════════════════════════════════════════════════════════════
 # STEP 3 — Filter points and build the occupancy grid
 # ═════════════════════════════════════════════════════════════════
+
 
 def lidar_to_occupancy(pts_ego: np.ndarray) -> np.ndarray:
     """
@@ -123,14 +122,14 @@ def lidar_to_occupancy(pts_ego: np.ndarray) -> np.ndarray:
                0.0 = free,  1.0 = occupied
     """
     # ── 1. Height filter ─────────────────────────────────────────
-    mask_z  = (pts_ego[:, 2] > Z_MIN) & (pts_ego[:, 2] < Z_MAX)
-    pts     = pts_ego[mask_z]
+    mask_z = (pts_ego[:, 2] > Z_MIN) & (pts_ego[:, 2] < Z_MAX)
+    pts = pts_ego[mask_z]
     print(f"  After Z filter: {len(pts):,} points remain.")
 
     # ── 2. Spatial filter (inside grid bounds) ───────────────────
-    mask_x  = (pts[:, 0] >= X_MIN) & (pts[:, 0] < X_MAX)
-    mask_y  = (pts[:, 1] >= Y_MIN) & (pts[:, 1] < Y_MAX)
-    pts     = pts[mask_x & mask_y]
+    mask_x = (pts[:, 0] >= X_MIN) & (pts[:, 0] < X_MAX)
+    mask_y = (pts[:, 1] >= Y_MIN) & (pts[:, 1] < Y_MAX)
+    pts = pts[mask_x & mask_y]
     print(f"  After XY filter: {len(pts):,} points in grid area.")
 
     # ── 3. Discretise to grid indices ────────────────────────────
@@ -161,6 +160,7 @@ def lidar_to_occupancy(pts_ego: np.ndarray) -> np.ndarray:
 # STEP 4 — Visualise and save
 # ═════════════════════════════════════════════════════════════════
 
+
 def visualise_occupancy(grid: np.ndarray, save_path: str = None):
     """
     Plot the ground truth occupancy grid.
@@ -175,25 +175,33 @@ def visualise_occupancy(grid: np.ndarray, save_path: str = None):
 
     ax.imshow(
         display,
-        cmap    = "RdYlGn_r",   # red = occupied, green = free
-        origin  = "lower",
-        extent  = [X_MIN, X_MAX, Y_MIN, Y_MAX],
-        vmin    = 0, vmax = 1,
+        cmap="RdYlGn_r",  # red = occupied, green = free
+        origin="lower",
+        extent=[X_MIN, X_MAX, Y_MIN, Y_MAX],
+        vmin=0,
+        vmax=1,
     )
 
     # Mark ego vehicle position
-    ax.plot(0, 0, marker="^", color="cyan", markersize=10,
-            label="Ego vehicle", zorder=5)
+    ax.plot(
+        0, 0, marker="^", color="cyan", markersize=10, label="Ego vehicle", zorder=5
+    )
 
     ax.set_xlabel("X (m) →  right")
     ax.set_ylabel("Y (m) →  forward")
     ax.set_title("Ground Truth Occupancy (LiDAR)")
 
-    occ_patch  = mpatches.Patch(color="red",   label="Occupied")
+    occ_patch = mpatches.Patch(color="red", label="Occupied")
     free_patch = mpatches.Patch(color="green", label="Free space")
-    ax.legend(handles=[occ_patch, free_patch,
-                        plt.Line2D([0],[0], marker="^", color="cyan",
-                                   linestyle="None", label="Ego")])
+    ax.legend(
+        handles=[
+            occ_patch,
+            free_patch,
+            plt.Line2D(
+                [0], [0], marker="^", color="cyan", linestyle="None", label="Ego"
+            ),
+        ]
+    )
 
     plt.tight_layout()
 
@@ -213,22 +221,21 @@ def save_grid(grid: np.ndarray, path: str = "ground_truth_occ.npy"):
 # ═════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-
     # ── CONFIG — edit these two lines ────────────────────────────
-    DATAROOT     = "/data/nuscenes"      # path to your dataset
-    NUSCENES_VER = "v1.0-mini"           # or "v1.0-trainval"
-    SAMPLE_IDX   = 0                     # which sample to use (0 = first)
+    DATAROOT = "/data/nuscenes"  # path to your dataset
+    NUSCENES_VER = "v1.0-mini"  # or "v1.0-trainval"
+    SAMPLE_IDX = 0  # which sample to use (0 = first)
     # ─────────────────────────────────────────────────────────────
 
-    nusc         = load_nuscenes(DATAROOT, NUSCENES_VER)
+    nusc = load_nuscenes(DATAROOT, NUSCENES_VER)
     sample_token = nusc.sample[SAMPLE_IDX]["token"]
     print(f"\nProcessing sample: {sample_token[:8]}...")
 
     # Load and transform LiDAR
-    pts_ego  = load_lidar_ego_frame(nusc, sample_token)
+    pts_ego = load_lidar_ego_frame(nusc, sample_token)
 
     # Build ground truth grid
-    gt_grid  = lidar_to_occupancy(pts_ego)
+    gt_grid = lidar_to_occupancy(pts_ego)
 
     # Save as .npy for Person A to compare against
     save_grid(gt_grid, "ground_truth_occ.npy")

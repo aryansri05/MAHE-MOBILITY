@@ -28,13 +28,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from config import (X_MIN, X_MAX, Y_MIN, Y_MAX,
-                    RESOLUTION, GRID_W, GRID_H)
+from mahe_mobility.config import X_MIN, X_MAX, Y_MIN, Y_MAX, RESOLUTION, GRID_W, GRID_H
 
 
 # ═════════════════════════════════════════════════════════════════
 # STEP 1 — Build the distance weight mask (numpy, CPU)
 # ═════════════════════════════════════════════════════════════════
+
 
 def build_distance_weight_mask() -> np.ndarray:
     """
@@ -54,19 +54,18 @@ def build_distance_weight_mask() -> np.ndarray:
     #   x_centre = X_MIN + (col + 0.5) * RESOLUTION
     #   y_centre = Y_MIN + (row + 0.5) * RESOLUTION
 
-    col_centres = X_MIN + (np.arange(GRID_W) + 0.5) * RESOLUTION   # (GRID_W,)
-    row_centres = Y_MIN + (np.arange(GRID_H) + 0.5) * RESOLUTION   # (GRID_H,)
-
-    # Broadcast into a full 2D grid
-    # X[row, col]  and  Y[row, col]
-    X, Y = np.meshgrid(col_centres, row_centres)   # both (GRID_H, GRID_W)
+    col_centres = X_MIN + (np.arange(GRID_W) + 0.5) * RESOLUTION  # (GRID_W,)
+    row_centres = Y_MIN + (np.arange(GRID_H) + 0.5) * RESOLUTION  # (GRID_H,)
 
     # ── Euclidean distance from ego (0, 0) ───────────────────────
-    distance = np.sqrt(X**2 + Y**2)               # (GRID_H, GRID_W)
+    # Use broadcasting instead of np.meshgrid to save memory and time
+    X = col_centres[None, :]  # shape (1, GRID_W)
+    Y = row_centres[:, None]  # shape (GRID_H, 1)
+    distance = np.hypot(X, Y)  # (GRID_H, GRID_W)
 
     # ── Inverse-distance weight ──────────────────────────────────
     #   +1 avoids division by zero at the origin cell
-    weight_mask = 1.0 / (distance + 1.0)          # (GRID_H, GRID_W)
+    weight_mask = 1.0 / (distance + 1.0)  # (GRID_H, GRID_W)
 
     # ── Optional: normalise so the mean weight = 1.0 ─────────────
     #   This keeps the total loss magnitude comparable to plain BCE
@@ -82,6 +81,7 @@ def build_distance_weight_mask() -> np.ndarray:
 # ═════════════════════════════════════════════════════════════════
 # STEP 2 — PyTorch loss module
 # ═════════════════════════════════════════════════════════════════
+
 
 class DistanceWeightedBCELoss(nn.Module):
     """
@@ -107,13 +107,11 @@ class DistanceWeightedBCELoss(nn.Module):
 
         # Build the weight mask once and register as a buffer
         # (buffers are moved to GPU automatically with .to(device))
-        mask_np  = build_distance_weight_mask()           # (H, W)
-        mask_t   = torch.from_numpy(mask_np)              # (H, W)
-        self.register_buffer("weight_mask", mask_t)       # persists in state_dict
+        mask_np = build_distance_weight_mask()  # (H, W)
+        mask_t = torch.from_numpy(mask_np)  # (H, W)
+        self.register_buffer("weight_mask", mask_t)  # persists in state_dict
 
-    def forward(self,
-                pred_logits: torch.Tensor,
-                gt:          torch.Tensor) -> torch.Tensor:
+    def forward(self, pred_logits: torch.Tensor, gt: torch.Tensor) -> torch.Tensor:
         """
         Args:
             pred_logits : raw model output  (B, 1, H, W) or (B, H, W)
@@ -124,27 +122,21 @@ class DistanceWeightedBCELoss(nn.Module):
         """
         # ── Normalise shapes ─────────────────────────────────────
         if pred_logits.dim() == 4:
-            pred_logits = pred_logits.squeeze(1)   # (B, H, W)
+            pred_logits = pred_logits.squeeze(1)  # (B, H, W)
         if gt.dim() == 4:
-            gt = gt.squeeze(1)                     # (B, H, W)
+            gt = gt.squeeze(1)  # (B, H, W)
 
-        # ── Per-cell BCE (unreduced) ──────────────────────────────
-        #   shape: (B, H, W)
-        bce_per_cell = F.binary_cross_entropy_with_logits(
-            pred_logits, gt, reduction="none"
+        # ── Weighted BCE (optimized) ──────────────────────────────
+        #   weight_mask is (H, W) — broadcasts across batch dim and computes efficiently
+        return F.binary_cross_entropy_with_logits(
+            pred_logits, gt, weight=self.weight_mask, reduction="mean"
         )
-
-        # ── Apply distance weight mask ────────────────────────────
-        #   weight_mask is (H, W) — broadcasts across batch dim
-        weighted = bce_per_cell * self.weight_mask   # (B, H, W)
-
-        # ── Mean over all cells and batch ────────────────────────
-        return weighted.mean()
 
 
 # ═════════════════════════════════════════════════════════════════
 # STEP 3 — Visualise the weight mask (sanity check)
 # ═════════════════════════════════════════════════════════════════
+
 
 def visualise_weight_mask(mask: np.ndarray, save_path: str = None):
     """
@@ -155,19 +147,17 @@ def visualise_weight_mask(mask: np.ndarray, save_path: str = None):
     fig, ax = plt.subplots(figsize=(6, 6))
 
     im = ax.imshow(
-        np.flipud(mask),           # flip so Y=0 is at the bottom
-        cmap   = "hot",
-        origin = "lower",
-        extent = [X_MIN, X_MAX, Y_MIN, Y_MAX],
+        np.flipud(mask),  # flip so Y=0 is at the bottom
+        cmap="hot",
+        origin="lower",
+        extent=[X_MIN, X_MAX, Y_MIN, Y_MAX],
     )
     plt.colorbar(im, ax=ax, label="Cell weight")
 
-    ax.plot(0, 0, marker="^", color="cyan", markersize=10,
-            label="Ego (weight=max)")
+    ax.plot(0, 0, marker="^", color="cyan", markersize=10, label="Ego (weight=max)")
     ax.set_xlabel("X (m) → right")
     ax.set_ylabel("Y (m) → forward")
-    ax.set_title("Distance-Weighted Loss Mask\n"
-                 "bright = errors penalised more")
+    ax.set_title("Distance-Weighted Loss Mask\nbright = errors penalised more")
     ax.legend()
     plt.tight_layout()
 
@@ -181,6 +171,7 @@ def visualise_weight_mask(mask: np.ndarray, save_path: str = None):
 # STEP 4 — Quick integration test (no GPU needed)
 # ═════════════════════════════════════════════════════════════════
 
+
 def demo_loss():
     """
     Prove the loss works by comparing two fake predictions:
@@ -191,7 +182,7 @@ def demo_loss():
     """
     print("\n── Demo: distance-weighted vs plain BCE ──")
 
-    B = 2   # batch size
+    B = 2  # batch size
     H, W = GRID_H, GRID_W
 
     # Random ground truth
@@ -201,26 +192,32 @@ def demo_loss():
     pred_good = gt * 4 - 2 + torch.randn(B, H, W) * 0.5
 
     # Bad prediction: deliberately wrong logits in the NEAR zone
-    pred_bad  = pred_good.clone()
-    near_rows = H // 10        # bottom 10% of grid = closest to car
+    pred_bad = pred_good.clone()
+    near_rows = H // 10  # bottom 10% of grid = closest to car
     pred_bad[:, :near_rows, :] = -pred_bad[:, :near_rows, :]
 
-    criterion       = DistanceWeightedBCELoss()
-    plain_bce       = nn.BCEWithLogitsLoss()
+    criterion = DistanceWeightedBCELoss()
+    plain_bce = nn.BCEWithLogitsLoss()
 
-    loss_good_w     = criterion(pred_good, gt)
-    loss_bad_w      = criterion(pred_bad,  gt)
+    loss_good_w = criterion(pred_good, gt)
+    loss_bad_w = criterion(pred_bad, gt)
     loss_good_plain = plain_bce(pred_good, gt)
-    loss_bad_plain  = plain_bce(pred_bad,  gt)
+    loss_bad_plain = plain_bce(pred_bad, gt)
 
     print(f"  Distance-weighted loss  — good pred : {loss_good_w.item():.4f}")
-    print(f"  Distance-weighted loss  — bad pred  : {loss_bad_w.item():.4f}  ← should be MUCH higher")
+    print(
+        f"  Distance-weighted loss  — bad pred  : {loss_bad_w.item():.4f}  ← should be MUCH higher"
+    )
     print(f"  Plain BCE loss          — good pred : {loss_good_plain.item():.4f}")
-    print(f"  Plain BCE loss          — bad pred  : {loss_bad_plain.item():.4f}  ← gap is smaller")
+    print(
+        f"  Plain BCE loss          — bad pred  : {loss_bad_plain.item():.4f}  ← gap is smaller"
+    )
 
-    ratio_weighted = loss_bad_w.item()    / loss_good_w.item()
-    ratio_plain    = loss_bad_plain.item()/ loss_good_plain.item()
-    print(f"\n  bad/good ratio — weighted: {ratio_weighted:.2f}x   plain: {ratio_plain:.2f}x")
+    ratio_weighted = loss_bad_w.item() / loss_good_w.item()
+    ratio_plain = loss_bad_plain.item() / loss_good_plain.item()
+    print(
+        f"\n  bad/good ratio — weighted: {ratio_weighted:.2f}x   plain: {ratio_plain:.2f}x"
+    )
     print("  ✓ Weighted ratio should be higher — near-car errors are penalised more.")
 
 
@@ -229,7 +226,6 @@ def demo_loss():
 # ═════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-
     # Build and visualise the weight mask
     mask = build_distance_weight_mask()
     visualise_weight_mask(mask, save_path="weight_mask.png")
@@ -243,7 +239,7 @@ if __name__ == "__main__":
 
     print("\n── How to use in your training loop ──")
     print("""
-    from task2_distance_weighted_loss import DistanceWeightedBCELoss
+    from mahe_mobility.tasks.task2_distance_weighted_loss import DistanceWeightedBCELoss
 
     criterion = DistanceWeightedBCELoss().to(device)
 

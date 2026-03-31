@@ -1,20 +1,29 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import GRID_H, GRID_W
+from mahe_mobility.config import GRID_H, GRID_W
 
 
 # ─────────────────────────────────────────────
 #  Building blocks
 # ─────────────────────────────────────────────
 
+
 class ConvBNReLU(nn.Sequential):
     """Conv2d → BatchNorm2d → ReLU. The standard residual unit brick."""
-    def __init__(self, in_ch: int, out_ch: int, kernel: int = 3,
-                 stride: int = 1, padding: int = 1):
+
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+    ):
         super().__init__(
-            nn.Conv2d(in_ch, out_ch, kernel, stride=stride,
-                      padding=padding, bias=False),
+            nn.Conv2d(
+                in_ch, out_ch, kernel, stride=stride, padding=padding, bias=False
+            ),
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
@@ -25,16 +34,18 @@ class ResBlock(nn.Module):
     Pre-activation residual block (He et al. 2016 v2).
     Keeps spatial resolution.
     """
+
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
-        self.bn1   = nn.BatchNorm2d(in_ch)
-        self.conv1 = nn.Conv2d(in_ch,  out_ch, 3, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(out_ch)
+        self.bn1 = nn.BatchNorm2d(in_ch)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
 
         self.proj = (
             nn.Conv2d(in_ch, out_ch, 1, bias=False)
-            if in_ch != out_ch else nn.Identity()
+            if in_ch != out_ch
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -48,6 +59,7 @@ class ResBlock(nn.Module):
 
 class DownBlock(nn.Module):
     """Downsample by 2× then apply N residual blocks."""
+
     def __init__(self, in_ch: int, out_ch: int, n_blocks: int = 2):
         super().__init__()
         layers = [
@@ -68,6 +80,7 @@ class UpBlock(nn.Module):
     Simple ConvBNReLU for the decoder arm.
     The actual spatial resizing is handled in BEVEncoder.forward via F.interpolate.
     """
+
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         # REMOVED: nn.Upsample(scale_factor=2) to prevent "Double-Size" error
@@ -81,14 +94,15 @@ class UpBlock(nn.Module):
 #  BEV Encoder
 # ─────────────────────────────────────────────
 
+
 class BEVEncoder(nn.Module):
     """U-Net style encoder for the 250×250 BEV feature map."""
 
     def __init__(
         self,
-        in_channels:   int = 64,
+        in_channels: int = 64,
         base_channels: int = 64,
-        out_channels:  int = 128,
+        out_channels: int = 128,
     ):
         super().__init__()
         C = base_channels
@@ -100,8 +114,8 @@ class BEVEncoder(nn.Module):
         )
 
         # Encoder
-        self.down1 = DownBlock(C,     C * 2, n_blocks=2) # 250 -> 125
-        self.down2 = DownBlock(C * 2, C * 4, n_blocks=2) # 125 -> 63
+        self.down1 = DownBlock(C, C * 2, n_blocks=2)  # 250 -> 125
+        self.down2 = DownBlock(C * 2, C * 4, n_blocks=2)  # 125 -> 63
 
         # Bottleneck
         self.bottleneck = nn.Sequential(
@@ -110,10 +124,10 @@ class BEVEncoder(nn.Module):
         )
 
         # Decoder
-        self.up1   = UpBlock(C * 4 + C * 2, C * 2)
+        self.up1 = UpBlock(C * 4 + C * 2, C * 2)
         self.skip1 = ResBlock(C * 2, C * 2)
 
-        self.up2   = UpBlock(C * 2 + C, C)
+        self.up2 = UpBlock(C * 2 + C, C)
         self.skip2 = ResBlock(C, C)
 
         # Output projection
@@ -131,24 +145,26 @@ class BEVEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Encoder
-        s0 = self.stem(x)              # (B, C, 250, 250)
-        s1 = self.down1(s0)            # (B, 2C, 125, 125)
-        s2 = self.down2(s1)            # (B, 4C, 63, 63)
-        b  = self.bottleneck(s2)       # (B, 4C, 63, 63)
+        s0 = self.stem(x)  # (B, C, 250, 250)
+        s1 = self.down1(s0)  # (B, 2C, 125, 125)
+        s2 = self.down2(s1)  # (B, 4C, 63, 63)
+        b = self.bottleneck(s2)  # (B, 4C, 63, 63)
 
         # Decoder 1: Upsample 63 -> 125
         # Explicit size ensures we match s1 exactly, avoiding off-by-one errors
-        b_up = F.interpolate(b, size=s1.shape[2:], mode='bilinear', align_corners=False)
+        b_up = F.interpolate(b, size=s1.shape[2:], mode="bilinear", align_corners=False)
         d1 = self.up1(torch.cat([b_up, s1], dim=1))
         d1 = self.skip1(d1)
 
         # Decoder 2: Upsample 125 -> 250
         # Explicit size ensures we match s0 exactly, avoiding Double-Size errors
-        d1_up = F.interpolate(d1, size=s0.shape[2:], mode='bilinear', align_corners=False)
+        d1_up = F.interpolate(
+            d1, size=s0.shape[2:], mode="bilinear", align_corners=False
+        )
         d2 = self.up2(torch.cat([d1_up, s0], dim=1))
         d2 = self.skip2(d2)
 
-        return self.out_proj(d2) # (B, out_channels, 250, 250)
+        return self.out_proj(d2)  # (B, out_channels, 250, 250)
 
 
 # ─────────────────────────────────────────────
@@ -163,7 +179,7 @@ if __name__ == "__main__":
     n_params = sum(p.numel() for p in enc.parameters()) / 1e6
     print(f"  Parameters : {n_params:.2f} M")
 
-    x   = torch.randn(B, C_in, GRID_H, GRID_W)
+    x = torch.randn(B, C_in, GRID_H, GRID_W)
     out = enc(x)
     print(f"  Input  : {tuple(x.shape)}")
     print(f"  Output : {tuple(out.shape)}")

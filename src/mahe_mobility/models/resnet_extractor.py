@@ -35,13 +35,13 @@ class ResNetFeatureExtractor(nn.Module):
         # Keep everything up to (and including) layer3
         # layer3 output has 256 channels at stride 8
         self.encoder = nn.Sequential(
-            backbone.conv1,    # stride 2
+            backbone.conv1,  # stride 2
             backbone.bn1,
             backbone.relu,
             backbone.maxpool,  # stride 2  → total stride 4
-            backbone.layer1,   # stride 1  → total stride 4
-            backbone.layer2,   # stride 2  → total stride 8
-            backbone.layer3,   # stride 1  → total stride 8  (256 ch)
+            backbone.layer1,  # stride 1  → total stride 4
+            backbone.layer2,  # stride 2  → total stride 8
+            backbone.layer3,  # stride 1  → total stride 8  (256 ch)
         )
 
         # Project 256 → out_channels with a 1×1 conv
@@ -71,7 +71,7 @@ class ResNetFeatureExtractor(nn.Module):
         -------
         feat : (B, out_channels, H/8, W/8)
         """
-        feat = self.encoder(x)     # (B, 256, H/8, W/8)
+        feat = self.encoder(x)  # (B, 256, H/8, W/8)
         feat = self.project(feat)  # (B, out_channels, H/8, W/8)
         return feat
 
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     n_params = sum(p.numel() for p in extractor.parameters()) / 1e6
     print(f"  Parameters : {n_params:.2f} M")
 
-    x   = torch.randn(B, 3, 224, 480)
+    x = torch.randn(B, 3, 224, 480)
     out = extractor(x)
     print(f"  Input  : {tuple(x.shape)}")
     print(f"  Output : {tuple(out.shape)}")

@@ -27,12 +27,13 @@ Metrics (eval only, not differentiable)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import GRID_H, GRID_W, X_MIN, Y_MIN, RESOLUTION, OCC_THRESHOLD
+from mahe_mobility.config import GRID_H, GRID_W, X_MIN, Y_MIN, RESOLUTION, OCC_THRESHOLD
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  SUBUNIT 3 — OccupancyHead
 # ═══════════════════════════════════════════════════════════════════
+
 
 class OccupancyHead(nn.Module):
     """
@@ -58,11 +59,9 @@ class OccupancyHead(nn.Module):
             nn.Conv2d(in_channels, hidden_ch, 3, padding=1, bias=False),
             nn.BatchNorm2d(hidden_ch),
             nn.ReLU(inplace=True),
-
             nn.Conv2d(hidden_ch, hidden_ch // 2, 3, padding=1, bias=False),
             nn.BatchNorm2d(hidden_ch // 2),
             nn.ReLU(inplace=True),
-
             # 1×1 projection → single logit per cell
             nn.Conv2d(hidden_ch // 2, 1, 1),
         )
@@ -89,7 +88,7 @@ class OccupancyHead(nn.Module):
     @torch.no_grad()
     def predict(
         self,
-        feats:     torch.Tensor,
+        feats: torch.Tensor,
         threshold: float = OCC_THRESHOLD,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -101,14 +100,15 @@ class OccupancyHead(nn.Module):
         mask  : (B, 1, GRID_H, GRID_W)   bool  — True = occupied
         """
         logits = self.forward(feats)
-        probs  = torch.sigmoid(logits)
-        mask   = probs > threshold
+        probs = torch.sigmoid(logits)
+        mask = probs > threshold
         return probs, mask
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  SUBUNIT 4 — Loss Functions
 # ═══════════════════════════════════════════════════════════════════
+
 
 class FocalLoss(nn.Module):
     """
@@ -138,7 +138,7 @@ class FocalLoss(nn.Module):
 
     def forward(
         self,
-        logits: torch.Tensor,   # (B, 1, H, W) raw logits
+        logits: torch.Tensor,  # (B, 1, H, W) raw logits
         targets: torch.Tensor,  # (B, 1, H, W) binary {0, 1} float
     ) -> torch.Tensor:
         """Returns scalar mean focal loss."""
@@ -148,15 +148,15 @@ class FocalLoss(nn.Module):
         )  # (B, 1, H, W)
 
         # p_t: probability of the TRUE class
-        p       = torch.sigmoid(logits)
-        p_t     = targets * p + (1 - targets) * (1 - p)
+        p = torch.sigmoid(logits)
+        p_t = targets * p + (1 - targets) * (1 - p)
 
         # α_t weighting
         alpha_t = targets * self.alpha + (1 - targets) * (1 - self.alpha)
 
         # Focal modulation
         focal_weight = alpha_t * (1 - p_t) ** self.gamma
-        loss         = focal_weight * bce
+        loss = focal_weight * bce
 
         return loss.mean()
 
@@ -176,17 +176,16 @@ class WeightedBCELoss(nn.Module):
 
     def __init__(self, pos_weight: float = 20.0):
         super().__init__()
-        self.register_buffer(
-            "pos_weight", torch.tensor([pos_weight])
-        )
+        self.register_buffer("pos_weight", torch.tensor([pos_weight]))
 
     def forward(
         self,
-        logits:  torch.Tensor,
+        logits: torch.Tensor,
         targets: torch.Tensor,
     ) -> torch.Tensor:
         return F.binary_cross_entropy_with_logits(
-            logits, targets,
+            logits,
+            targets,
             pos_weight=self.pos_weight.to(logits.device),
         )
 
@@ -195,11 +194,12 @@ class WeightedBCELoss(nn.Module):
 #  SUBUNIT 4 — Evaluation Metrics
 # ═══════════════════════════════════════════════════════════════════
 
+
 @torch.no_grad()
 def occupancy_iou(
-    pred_mask:  torch.Tensor,   # (B, 1, H, W) bool
-    gt_mask:    torch.Tensor,   # (B, 1, H, W) bool
-    eps:        float = 1e-6,
+    pred_mask: torch.Tensor,  # (B, 1, H, W) bool
+    gt_mask: torch.Tensor,  # (B, 1, H, W) bool
+    eps: float = 1e-6,
 ) -> torch.Tensor:
     """
     Per-sample occupancy IoU averaged over the batch.
@@ -211,11 +211,11 @@ def occupancy_iou(
     iou : scalar tensor
     """
     pred = pred_mask.bool().float()
-    gt   = gt_mask.bool().float()
+    gt = gt_mask.bool().float()
 
     # Sum over spatial dims (H, W, channel)
-    intersection = (pred * gt).sum(dim=(1, 2, 3))   # (B,)
-    union        = (pred + gt).clamp(max=1).sum(dim=(1, 2, 3))
+    intersection = (pred * gt).sum(dim=(1, 2, 3))  # (B,)
+    union = (pred + gt).clamp(max=1).sum(dim=(1, 2, 3))
 
     iou = (intersection + eps) / (union + eps)
     return iou.mean()
@@ -248,16 +248,16 @@ def _build_distance_weight_map(device: torch.device) -> torch.Tensor:
     y_m = grid_y * RESOLUTION + Y_MIN + RESOLUTION / 2
 
     # Euclidean distance from ego (ego is at X=0, Y=0 in ego frame)
-    dist = torch.sqrt(x_m ** 2 + y_m ** 2)          # (H, W)
-    weights = 1.0 / (dist + 1.0)                     # avoid div/0
+    dist = torch.sqrt(x_m**2 + y_m**2)  # (H, W)
+    weights = 1.0 / (dist + 1.0)  # avoid div/0
 
-    return weights.unsqueeze(0).unsqueeze(0)          # (1, 1, H, W)
+    return weights.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
 
 @torch.no_grad()
 def distance_weighted_error(
-    pred_probs:  torch.Tensor,   # (B, 1, H, W) sigmoid probabilities
-    gt_mask:     torch.Tensor,   # (B, 1, H, W) binary float/bool
+    pred_probs: torch.Tensor,  # (B, 1, H, W) sigmoid probabilities
+    gt_mask: torch.Tensor,  # (B, 1, H, W) binary float/bool
 ) -> torch.Tensor:
     """
     Challenge metric: distance-weighted mean absolute error.
@@ -270,11 +270,11 @@ def distance_weighted_error(
     Returns a scalar (mean over batch).
     """
     weights = _build_distance_weight_map(pred_probs.device)  # (1,1,H,W)
-    gt_f    = gt_mask.float()
+    gt_f = gt_mask.float()
 
-    abs_err     = (pred_probs - gt_f).abs()             # (B, 1, H, W)
-    weighted    = (abs_err * weights).sum(dim=(1,2,3))   # (B,)
-    normaliser  = weights.sum()
+    abs_err = (pred_probs - gt_f).abs()  # (B, 1, H, W)
+    weighted = (abs_err * weights).sum(dim=(1, 2, 3))  # (B,)
+    normaliser = weights.sum()
 
     return (weighted / normaliser).mean()
 
@@ -282,6 +282,7 @@ def distance_weighted_error(
 # ═══════════════════════════════════════════════════════════════════
 #  Combined criterion (used in training loop)
 # ═══════════════════════════════════════════════════════════════════
+
 
 class OccupancyCriterion(nn.Module):
     """
@@ -301,35 +302,35 @@ class OccupancyCriterion(nn.Module):
 
     def __init__(
         self,
-        focal_alpha:  float = 0.25,
-        focal_gamma:  float = 2.0,
-        pos_weight:   float = 20.0,
+        focal_alpha: float = 0.25,
+        focal_gamma: float = 2.0,
+        pos_weight: float = 20.0,
         lambda_focal: float = 1.0,
-        lambda_bce:   float = 0.5,
+        lambda_bce: float = 0.5,
     ):
         super().__init__()
-        self.focal      = FocalLoss(focal_alpha, focal_gamma)
-        self.bce        = WeightedBCELoss(pos_weight)
-        self.lf         = lambda_focal
-        self.lb         = lambda_bce
+        self.focal = FocalLoss(focal_alpha, focal_gamma)
+        self.bce = WeightedBCELoss(pos_weight)
+        self.lf = lambda_focal
+        self.lb = lambda_bce
 
     def forward(
         self,
-        logits:  torch.Tensor,   # (B, 1, H, W)
-        targets: torch.Tensor,   # (B, 1, H, W) binary float
+        logits: torch.Tensor,  # (B, 1, H, W)
+        targets: torch.Tensor,  # (B, 1, H, W) binary float
     ) -> dict[str, torch.Tensor]:
         """
         Returns a dict with individual loss components and the total,
         so the training loop can log each term separately.
         """
         l_focal = self.focal(logits, targets)
-        l_bce   = self.bce(logits, targets)
-        total   = self.lf * l_focal + self.lb * l_bce
+        l_bce = self.bce(logits, targets)
+        total = self.lf * l_focal + self.lb * l_bce
 
         return {
-            "loss":       total,
+            "loss": total,
             "focal_loss": l_focal,
-            "bce_loss":   l_bce,
+            "bce_loss": l_bce,
         }
 
 
@@ -342,21 +343,19 @@ if __name__ == "__main__":
     B = 2
 
     # ── Head ──────────────────────────────────────────────────────
-    head      = OccupancyHead(in_channels=128, hidden_ch=64)
-    feats     = torch.randn(B, 128, GRID_H, GRID_W)
-    logits    = head(feats)
+    head = OccupancyHead(in_channels=128, hidden_ch=64)
+    feats = torch.randn(B, 128, GRID_H, GRID_W)
+    logits = head(feats)
     probs, mask = head.predict(feats)
 
     print(f"  logits : {tuple(logits.shape)}")
-    print(f"  probs  : {tuple(probs.shape)}  "
-          f"[{probs.min():.3f}, {probs.max():.3f}]")
-    print(f"  mask   : {mask.sum().item()} occupied cells "
-          f"(of {GRID_H*GRID_W})")
+    print(f"  probs  : {tuple(probs.shape)}  [{probs.min():.3f}, {probs.max():.3f}]")
+    print(f"  mask   : {mask.sum().item()} occupied cells (of {GRID_H * GRID_W})")
 
     # ── Loss ──────────────────────────────────────────────────────
-    targets   = (torch.rand(B, 1, GRID_H, GRID_W) > 0.95).float()
+    targets = (torch.rand(B, 1, GRID_H, GRID_W) > 0.95).float()
     criterion = OccupancyCriterion()
-    losses    = criterion(logits, targets)
+    losses = criterion(logits, targets)
     print(f"\n  total loss : {losses['loss'].item():.4f}")
     print(f"  focal loss : {losses['focal_loss'].item():.4f}")
     print(f"  bce loss   : {losses['bce_loss'].item():.4f}")

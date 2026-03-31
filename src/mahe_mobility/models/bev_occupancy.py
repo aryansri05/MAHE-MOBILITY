@@ -29,9 +29,9 @@ Training
 import torch
 import torch.nn as nn
 
-from config           import GRID_H, GRID_W, OCC_THRESHOLD
-from models.bev_encoder      import BEVEncoder
-from models.occupancy import (
+from mahe_mobility.config import GRID_H, GRID_W, OCC_THRESHOLD
+from mahe_mobility.models.bev_encoder import BEVEncoder
+from mahe_mobility.models.occupancy import (
     OccupancyHead,
     OccupancyCriterion,
     occupancy_iou,
@@ -59,8 +59,8 @@ class BEVOccupancyModel(nn.Module):
         self,
         lift_channels: int = 64,
         base_channels: int = 64,
-        enc_out_ch:    int = 128,
-        head_hidden:   int = 64,
+        enc_out_ch: int = 128,
+        head_hidden: int = 64,
     ):
         super().__init__()
         self.encoder = BEVEncoder(
@@ -85,7 +85,7 @@ class BEVOccupancyModel(nn.Module):
         -------
         logits : (B, 1, GRID_H, GRID_W)   — un-sigmoidied
         """
-        feats  = self.encoder(bev_raw)
+        feats = self.encoder(bev_raw)
         logits = self.head(feats)
         return logits
 
@@ -93,7 +93,7 @@ class BEVOccupancyModel(nn.Module):
     @torch.no_grad()
     def predict(
         self,
-        bev_raw:   torch.Tensor,
+        bev_raw: torch.Tensor,
         threshold: float = OCC_THRESHOLD,
     ) -> dict:
         """
@@ -101,15 +101,15 @@ class BEVOccupancyModel(nn.Module):
         """
         self.eval()
         logits = self.forward(bev_raw)
-        probs  = torch.sigmoid(logits)
-        mask   = probs > threshold
+        probs = torch.sigmoid(logits)
+        mask = probs > threshold
         return {"logits": logits, "probs": probs, "mask": mask}
 
     # ------------------------------------------------------------------
     def training_step(
         self,
-        bev_raw:   torch.Tensor,
-        gt_mask:   torch.Tensor,
+        bev_raw: torch.Tensor,
+        gt_mask: torch.Tensor,
         criterion: OccupancyCriterion,
     ) -> dict:
         """
@@ -131,8 +131,8 @@ class BEVOccupancyModel(nn.Module):
     @torch.no_grad()
     def validation_step(
         self,
-        bev_raw:   torch.Tensor,
-        gt_mask:   torch.Tensor,
+        bev_raw: torch.Tensor,
+        gt_mask: torch.Tensor,
         threshold: float = OCC_THRESHOLD,
     ) -> dict:
         """
@@ -143,15 +143,16 @@ class BEVOccupancyModel(nn.Module):
         dict with 'iou' and 'dwe' scalar tensors
         """
         self.eval()
-        result  = self.predict(bev_raw, threshold)
-        iou     = occupancy_iou(result["mask"], gt_mask.bool())
-        dwe     = distance_weighted_error(result["probs"], gt_mask)
+        result = self.predict(bev_raw, threshold)
+        iou = occupancy_iou(result["mask"], gt_mask.bool())
+        dwe = distance_weighted_error(result["probs"], gt_mask)
         return {"iou": iou, "dwe": dwe}
 
 
 # ─────────────────────────────────────────────
 #  Example training loop skeleton
 # ─────────────────────────────────────────────
+
 
 def example_training_loop():
     """
@@ -160,21 +161,23 @@ def example_training_loop():
     """
     import torch.optim as optim
 
-    device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model     = BEVOccupancyModel().to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = BEVOccupancyModel().to(device)
     criterion = OccupancyCriterion(
-        focal_alpha=0.25, focal_gamma=2.0,
+        focal_alpha=0.25,
+        focal_gamma=2.0,
         pos_weight=20.0,
-        lambda_focal=1.0, lambda_bce=0.5,
+        lambda_focal=1.0,
+        lambda_bce=0.5,
     )
     optimizer = optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
 
     B, C = 2, 64
     print(f"\nRunning on: {device}")
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f} M")
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M")
 
-    for step in range(3):   # replace with real dataloader
+    for step in range(3):  # replace with real dataloader
         # ── Simulate a batch (replace with real data) ─────────────
         bev_raw = torch.randn(B, C, GRID_H, GRID_W, device=device)
         # ~5% occupancy, matching nuScenes statistics
@@ -192,7 +195,7 @@ def example_training_loop():
         metrics = model.validation_step(bev_raw, gt_mask)
 
         print(
-            f"  step {step+1} | "
+            f"  step {step + 1} | "
             f"loss={losses['loss'].item():.4f}  "
             f"focal={losses['focal_loss'].item():.4f}  "
             f"bce={losses['bce_loss'].item():.4f} | "
