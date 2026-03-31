@@ -276,7 +276,18 @@ def train_pipeline(
 # =============================================================
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Mahe Mobility BEV Training")
+    parser.add_argument("--dataroot", type=str, default="./data/nuscenes", help="Path to nuScenes dataset")
+    parser.add_argument("--version", type=str, default="v1.0-mini", help="nuScenes dataset version")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to train")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("LSS Full Pipeline — NuScenes → 2D → 3D Lift → BEV")
     print("=" * 60)
-    model = train_pipeline()
+    model = train_pipeline(
+        dataroot=args.dataroot,
+        version=args.version,
+        num_epochs=args.epochs
+    )
