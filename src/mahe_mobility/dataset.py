@@ -122,29 +122,30 @@ class NuScenesFrontCameraDataset(Dataset):
             rot_rad = np.radians(rot_deg)
             cos_r, sin_r = np.cos(rot_rad), np.sin(rot_rad)
             
-            # Rotation matrix for BEV (XY plane)
-            # R_aug rotates the world/lidar points. 
-            R_aug = np.array([
-                [cos_r * scale, -sin_r * scale, 0],
-                [sin_r * scale,  cos_r * scale, 0],
-                [0,              0,             1]
+            # Pure rotation matrix (for extrinsics sync)
+            R_aug_pure = np.array([
+                [cos_r, -sin_r, 0],
+                [sin_r,  cos_r, 0],
+                [0,      0,     1]
             ])
             
+            # Scaled rotation matrix (for LiDAR/BEV points)
+            R_aug_scaled = R_aug_pure * scale
+            
             # 2. Transform LiDAR points (Ego frame)
-            pts_ego = (R_aug @ pts_ego.T).T
+            pts_ego = (R_aug_scaled @ pts_ego.T).T
             
             # 3. SYNC: Update Extrinsics for the LSS model
-            # Formula: R_new = R_ext * R_aug_inv = R_ext * R_aug.T (for pure rotation)
+            # Must be PURE rotation for Quaternion constructor
             from pyquaternion import Quaternion
             q_ext = Quaternion(rotation.numpy())
             R_ext_mat = q_ext.rotation_matrix
-            
-            # Note: We only need the 3x3 rotation part of R_aug
-            R_new_mat = R_ext_mat @ R_aug.T
+            R_new_mat = R_ext_mat @ R_aug_pure.T
             rotation = torch.tensor(Quaternion(matrix=R_new_mat).elements).float()
             
-            # Sync translation: t_new = t_old (rotation around ego origin)
-            # If we add shifting, we'd add delta-t here.
+            # 4. SYNC: Update Intrinsics (scale focal lengths to match BEV zoom)
+            intrinsic[0, 0] *= scale
+            intrinsic[1, 1] *= scale
         
         # Generate Depth GT (Uses the potentially augmented pts_ego)
         gt_depth = self.get_depth_gt(pts_ego, intrinsic, translation, rotation)
