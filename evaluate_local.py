@@ -19,7 +19,7 @@ from mahe_mobility.dataset import NuScenesFrontCameraDataset
 from mahe_mobility.tasks.task3_evaluation_iou import visualise_error_map
 from pipeline import BEVModel
 
-WEIGHTS = "bev_model_best_v2.pth"  # Best ResNet34 model from Kaggle training
+WEIGHTS = "bev_model_final_v2_train2.pth"  # Best ResNet34 model from Kaggle training
 
 
 def run_final_evaluation():
