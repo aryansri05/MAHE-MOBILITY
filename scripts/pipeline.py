@@ -195,7 +195,7 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 4,
+    batch_size: int = 8,  # INCREASED TO 8 FOR KAGGLE GPU
     num_epochs: int = 1,
     out_channels: int = 64,
 ):
@@ -211,7 +211,15 @@ def train_pipeline(
 
     # Dataset & loader
     dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    # OPTIMIZED LOADER: Uses CPU threads to fetch data while GPU does math
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=2, 
+        pin_memory=True
+    )
 
     # Model
     model = BEVModel(
@@ -219,16 +227,12 @@ def train_pipeline(
     ).to(device)
 
     criterion = DistanceWeightedBCELoss().to(device)
-
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     print("Starting Training...")
     for epoch in range(num_epochs):
-        for batch_idx, (images, intrinsics, trans, rot, gt_occupancy) in enumerate(
-            dataloader
-        ):
-            if batch_idx >= 5:  # ← ADD THIS
-                break
+        for batch_idx, (images, intrinsics, trans, rot, gt_occupancy) in enumerate(dataloader):
+            # NO MORE BATCH LIMIT HERE! It will process the whole dataset.
             images = images.to(device)
             intrinsics = intrinsics.to(device)
             trans = trans.to(device)
@@ -256,7 +260,6 @@ def train_pipeline(
     
     # Generate visualization for the last batch
     print("Generating post-training visualizations...")
-    import matplotlib.pyplot as plt
     try:
         from mahe_mobility.tasks.task3_evaluation_iou import visualise_error_map
         # Take the first sample from the batch to visualize
@@ -268,6 +271,11 @@ def train_pipeline(
     except Exception as e:
         print(f"Failed to generate visualize image: {e}")
         
+    # --- ADDED: EXPORT MODEL WEIGHTS ---
+    torch.save(model.state_dict(), "bev_model_final.pth")
+    print("💾 Model weights successfully saved to bev_model_final.pth")
+    # -----------------------------------
+    
     return model
 
 
