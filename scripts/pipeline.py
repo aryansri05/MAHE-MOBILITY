@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import os
+import gc
 from typing import Optional, Tuple
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
@@ -68,7 +69,7 @@ class LiftHead(nn.Module):
         return feat_up.unsqueeze(2) * depth_dist.unsqueeze(1), depth_dist
 
 # =============================================================
-#  BEVModel — full end-to-end nn.Module
+#  BEVModel — Triple-Block Checkpointed forward
 # =============================================================
 
 class BEVModel(nn.Module):
@@ -89,22 +90,22 @@ class BEVModel(nn.Module):
     def forward(self, images, intrinsics, translation, rotation):
         device = images.device
         
-        # 🧪 ACCURACY PUSH: Using Gradient Checkpointing for 2D backbone
-        def custom_forward(img):
-            f2d = self.feature_extractor(img)
-            f3d, dp = self.lift_head(f2d)
-            return f3d, dp
-
-        # Wrap in checkpointing to save ~5GB of VRAM
-        feat_3d, depth_probs = torch.utils.checkpoint.checkpoint(
-            custom_forward, images, use_reentrant=False
-        )
+        # ── Triple-Block Checkpointing (Memory Safety) ────
+        def get_feat_2d(img):
+            return self.feature_extractor(img)
+            
+        feat_2d = torch.utils.checkpoint.checkpoint(get_feat_2d, images, use_reentrant=False)
         
-        # Extrinsics handling
-        ego2cam = build_ego2cam(translation[0].cpu(), rotation[0].cpu()).to(device)
+        def get_frustum(f2d):
+            return self.lift_head(f2d)
+            
+        feat_3d, depth_probs = torch.utils.checkpoint.checkpoint(get_frustum, feat_2d, use_reentrant=False)
         
-        # Voxel pool (cached internally)
-        bev_raw = self.geometry(feat_3d, intrinsics, ego2cam.unsqueeze(0).expand(feat_3d.shape[0], -1, -1))
+        def get_bev(f3d, k_mat, trans, rot):
+            e2c = build_ego2cam(trans[0].cpu(), rot[0].cpu()).to(device)
+            return self.geometry(f3d, k_mat, e2c.unsqueeze(0).expand(f3d.shape[0], -1, -1))
+            
+        bev_raw = torch.utils.checkpoint.checkpoint(get_bev, feat_3d, intrinsics, translation, rotation, use_reentrant=False)
         
         logits = self.occupancy_model(bev_raw)
         return logits, depth_probs
@@ -116,17 +117,17 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 1, # BS=1 for absolute stability
-    accumulation_steps: int = 4, # Effective BS = 4
+    batch_size: int = 1, 
+    accumulation_steps: int = 4, 
     num_epochs: int = 20,
     out_channels: int = 64,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    print(f"\n🚀 Accuracy-First: Initializing Pipeline on: {device} (Eff. BS: {batch_size * accumulation_steps})")
+    print(f"\n🚀 Accuracy-First Deployment (Eff. BS: {batch_size * accumulation_steps})")
 
     cam_cfg = CameraConfig(image_h=224, image_w=480)
     bev_cfg = BEVGridConfig(x_min=X_MIN, x_max=X_MAX, y_min=Y_MIN, y_max=Y_MAX, cell_size=RESOLUTION)
-    depth_cfg = DepthConfig() # Uses default 41 steps for Accuracy
+    depth_cfg = DepthConfig() # 41 steps
 
     full_dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=True)
     val_full = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=False)
@@ -147,14 +148,27 @@ def train_pipeline(
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
-    checkpoint_path = "bev_checkpoint_v2.pth"
+    # Paths
     best_model_path = "bev_model_best_v2.pth"
+    latest_checkpoint_path = "bev_model_latest.pth"
+    
+    start_epoch = 0
     best_iou = 0.0
 
-    print("Starting Training with ACTIVATION CHECKPOINTING & MODEL CHECKPOINTING...")
-    for epoch in range(num_epochs):
+    # 🔄 AUTO-RESUME Logic
+    if os.path.exists(latest_checkpoint_path):
+        print(f"🔄 Found existing checkpoint: {latest_checkpoint_path}. Resuming...")
+        checkpoint = torch.load(latest_checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_iou = checkpoint.get('best_iou', 0.0)
+        print(f"   Resuming from Epoch {start_epoch+1}")
+
+    print("Starting Training Loop...")
+    for epoch in range(start_epoch, num_epochs):
         model.train()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         
         for batch_idx, (images, intrinsics, trans, rot, gt_occ, gt_depth) in enumerate(train_loader):
             images, intrinsics = images.to(device), intrinsics.to(device)
@@ -173,18 +187,16 @@ def train_pipeline(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
                 if (batch_idx + 1) % accumulation_steps == 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
                     optimizer.step()
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)
 
             if (batch_idx + 1) % 10 == 0:
-                mem_used = torch.cuda.max_memory_allocated() / 1024**3 if device.type=="cuda" else 0
-                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} (Depth: {loss_dict['depth_loss']:.4f}) | peak: {mem_used:.2f}GB")
-
+                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} (Depth: {loss_dict['depth_loss']:.4f})")
 
         # --- VALIDATION ---
         model.eval()
@@ -201,14 +213,19 @@ def train_pipeline(
         avg_v_iou = (v_iou / len(val_loader)) * 100
         print(f"✅ Epoch {epoch+1} complete. Val IoU: {avg_v_iou:.2f}%")
         
-        # Save 'latest' model every epoch
-        torch.save(model.state_dict(), "bev_model_latest.pth")
+        # 💾 SAVE FULL CHECKPOINT EVERY EPOCH
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_iou': best_iou,
+        }, latest_checkpoint_path)
 
         if avg_v_iou > best_iou:
             best_iou = avg_v_iou
             torch.save(model.state_dict(), best_model_path)
+            print(f"⭐ New Best Model Saved (IoU: {best_iou:.2f}%)")
 
-    torch.save(model.state_dict(), "bev_model_final_push.pth")
     return model
 
 if __name__ == "__main__":
