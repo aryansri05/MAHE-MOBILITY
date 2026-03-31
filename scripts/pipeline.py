@@ -229,8 +229,19 @@ def train_pipeline(
     criterion = DistanceWeightedBCELoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
+    import os
+    checkpoint_path = "bev_checkpoint.pth"
+    start_epoch = 0
+    if os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"✅ Resumed training from epoch {start_epoch}")
+
     print("Starting Training...")
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         for batch_idx, (images, intrinsics, trans, rot, gt_occupancy) in enumerate(dataloader):
             # NO MORE BATCH LIMIT HERE! It will process the whole dataset.
             images = images.to(device)
@@ -255,6 +266,25 @@ def train_pipeline(
                 f"BEV shape: {tuple(bev.shape)}  "
                 f"Loss: {loss.item():.4f}"
             )
+
+            # Save checkpoint frequently to avoid data loss
+            if (batch_idx + 1) % 50 == 0:
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': loss.item(),
+                }, checkpoint_path)
+                print(f"  💾 [Checkpoint] Saved mid-epoch progress at batch {batch_idx + 1}")
+
+        # End of epoch checkpoint
+        torch.save({
+            'epoch': epoch + 1,  # If epoch finished, next loop it will start from epoch+1
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': loss.item(),
+        }, checkpoint_path)
+        print(f"💾 [Checkpoint] Saved end-of-epoch checkpoint for epoch {epoch + 1}")
 
     print("\n✅ Training complete.")
     
