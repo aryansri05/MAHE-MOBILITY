@@ -211,17 +211,22 @@ def train_pipeline(
     )
     depth_cfg = DepthConfig()
 
-    # Dataset & Val Split
-    full_dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version)
+    # Dataset & Val Split — augmentations applied only to train set
+    full_dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=True)
     total_samples = len(full_dataset)
     val_size = max(1, int(0.1 * total_samples))
     train_size = total_samples - val_size
-    
-    train_dataset, val_dataset = torch.utils.data.random_split(
+
+    # Split indices with a fixed seed for reproducibility
+    train_dataset, _ = torch.utils.data.random_split(
         full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
     )
-    
-    # OPTIMIZED LOADER: Uses CPU threads to fetch data while GPU does math
+    # Validation set uses clean (no-augmentation) transforms
+    val_full_dataset = NuScenesFrontCameraDataset(dataroot=dataroot, version=version, train=False)
+    _, val_dataset = torch.utils.data.random_split(
+        val_full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
+    )
+
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
@@ -229,6 +234,7 @@ def train_pipeline(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
     print(f"📊 Dataset split: {train_size} train, {val_size} validation samples.")
+
 
     # Model
     model = BEVModel(
