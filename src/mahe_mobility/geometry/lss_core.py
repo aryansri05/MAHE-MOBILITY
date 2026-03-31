@@ -43,7 +43,7 @@ class DepthConfig:
 
     d_min: float = 4.0
     d_max: float = 45.0
-    d_steps: int = 41
+    d_steps: int = 41 # Restore to 41 for maximum accuracy
 
 
 # ─────────────────────────────────────────────
