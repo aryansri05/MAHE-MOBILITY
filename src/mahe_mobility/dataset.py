@@ -9,7 +9,12 @@ from mahe_mobility.tasks.task1_lidar_to_occupancy import load_lidar_ego_frame, l
 class NuScenesFrontCameraDataset(Dataset):
     def __init__(self, dataroot="./data/nuscenes", version="v1.0-mini"):
         self.nusc = NuScenes(version=version, dataroot=dataroot, verbose=False)
-        self.samples = self.nusc.sample[:5]
+        
+        # --- THE FIX: Removed the [:5] limit to load the FULL dataset! ---
+        self.samples = self.nusc.sample
+        print(f"✅ NuScenes Dataset Ready: Found {len(self.samples)} total images for training!")
+        # -----------------------------------------------------------------
+        
         self.transform = transforms.Compose(
             [
                 transforms.Resize((224, 480)),
