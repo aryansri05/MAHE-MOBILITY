@@ -4,19 +4,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
-from torchvision.models import ResNet18_Weights
+from torchvision.models import ResNet34_Weights
 
 
 class ResNetFeatureExtractor(nn.Module):
     """
-    2-D image feature extractor based on a pretrained ResNet-18 backbone.
+    2-D image feature extractor based on a pretrained ResNet-34 backbone.
 
     Takes a batch of RGB images and returns a spatial feature map
     suitable for the LSS Lift step.
 
     Architecture
     ------------
-    ResNet-18 (pretrained, ImageNet) → strip avgpool + fc
+    ResNet-34 (pretrained, ImageNet) → strip avgpool + fc
     → keep up to layer3  (stride-8 output)
     → 1×1 conv to project to out_channels
 
@@ -29,8 +29,8 @@ class ResNetFeatureExtractor(nn.Module):
     def __init__(self, out_channels: int = 64):
         super().__init__()
 
-        # Load pretrained ResNet-18
-        backbone = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+        # Load pretrained ResNet-34
+        backbone = models.resnet34(weights=ResNet34_Weights.DEFAULT)
 
         # Keep everything up to (and including) layer3
         # layer3 output has 256 channels at stride 8
@@ -49,6 +49,7 @@ class ResNetFeatureExtractor(nn.Module):
             nn.Conv2d(256, out_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.2),
         )
 
         self._init_projection()
