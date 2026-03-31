@@ -72,8 +72,27 @@ def run_final_evaluation():
         union        = np.logical_or(preds_binary, gt_binary).sum()
         iou_score    = (intersection / union) * 100 if union > 0 else 0.0
 
+        # ── Precision / Recall / F1 ──────────────────────────────
+        TP = (preds_binary * gt_binary).sum()
+        FP = (preds_binary * (1 - gt_binary)).sum()
+        FN = ((1 - preds_binary) * gt_binary).sum()
+        precision = TP / (TP + FP + 1e-6)
+        recall    = TP / (TP + FN + 1e-6)
+        f1_score  = 2 * (precision * recall) / (precision + recall + 1e-6)
+
+        # ── Distance-Weighted Error (20× penalty in 0–10 m zone) ─
+        errors = np.abs(preds_binary.astype(float) - gt_binary.astype(float))
+        weights = np.ones_like(errors, dtype=float)
+        ten_meter_mark = int(errors.shape[0] * 0.8)  # bottom 20% ≈ 0–10 m
+        weights[ten_meter_mark:, :] = 20.0
+        dwe = (errors * weights).sum() / weights.sum()
+
         print(f"\n📊 FINAL METRICS:")
-        print(f"   IoU Score: {iou_score:.2f}%")
+        print(f"   IoU Score  : {iou_score:.2f}%")
+        print(f"   Precision  : {precision:.4f}")
+        print(f"   Recall     : {recall:.4f}")
+        print(f"   F1 Score   : {f1_score:.4f}")
+        print(f"   DWE        : {dwe:.4f}  (lower is better)")
 
         visualise_error_map(pred_probs, gt, save_path="hackathon_final_plot.png")
         print("\n✅ Diagnostic plot saved as 'hackathon_final_plot.png'")
