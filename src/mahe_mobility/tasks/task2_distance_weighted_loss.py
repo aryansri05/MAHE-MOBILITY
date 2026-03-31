@@ -225,28 +225,3 @@ def demo_loss():
 # MAIN
 # ═════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
-    # Build and visualise the weight mask
-    mask = build_distance_weight_mask()
-    visualise_weight_mask(mask, save_path="weight_mask.png")
-
-    # Save mask as .npy (useful for Person A's training loop)
-    np.save("distance_weight_mask.npy", mask)
-    print("  Mask saved → distance_weight_mask.npy")
-
-    # Run integration demo
-    demo_loss()
-
-    print("\n── How to use in your training loop ──")
-    print("""
-    from mahe_mobility.tasks.task2_distance_weighted_loss import DistanceWeightedBCELoss
-
-    criterion = DistanceWeightedBCELoss().to(device)
-
-    for batch in dataloader:
-        pred   = model(images)          # raw logits (B, 1, H, W)
-        gt     = batch['occupancy']     # binary (B, 1, H, W)
-        loss   = criterion(pred, gt)
-        loss.backward()
-        optimizer.step()
-    """)

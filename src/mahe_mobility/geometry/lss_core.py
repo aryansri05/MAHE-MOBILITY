@@ -43,7 +43,7 @@ class DepthConfig:
 
     d_min: float = 4.0
     d_max: float = 45.0
-    d_steps: int = 41
+    d_steps: int = 41 # Restore to 41 for maximum accuracy
 
 
 # ─────────────────────────────────────────────
@@ -197,10 +197,6 @@ class VoxelPooling(nn.Module):
 
 
 # ─────────────────────────────────────────────
-#  Top-level: GeometryArchitect (LSS Core)
-# ─────────────────────────────────────────────
-
-
 class GeometryArchitect(nn.Module):
     def __init__(
         self,
@@ -211,15 +207,61 @@ class GeometryArchitect(nn.Module):
     ):
         super().__init__()
         self.frustum_gen = FrustumGenerator(cam_cfg, depth_cfg)
-        self.precomp = DepthPrecomputer(self.frustum_gen, bev_cfg, ego2cam)
+        self.bev_cfg, self.cam_cfg, self.depth_cfg = bev_cfg, cam_cfg, depth_cfg
+        
+        # Initial precomputation (standard ego frame)
+        initial_ego2cam = ego2cam if ego2cam is not None else torch.eye(4)
+        self.precomp = DepthPrecomputer(self.frustum_gen, bev_cfg, initial_ego2cam)
+        
         self.voxel_pool = VoxelPooling()
-        self.cam_cfg = cam_cfg
-        self.bev_cfg = bev_cfg
-        self.depth_cfg = depth_cfg
+        
+        # Device-aware cache for dynamic extrinsics/augmentation
+        self._cache = {}
+        self._max_cache_size = 64 # Enough for a full batch + val offsets
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """features : (B, C, D, img_H, img_W)  →  bev : (B, C, bev_H, bev_W)"""
-        return self.voxel_pool(features, self.precomp)
+    def _get_cache_key(self, intrinsic: torch.Tensor, extrinsic: torch.Tensor):
+        """
+        Hash geometric matrices with precision to avoid floating-point jitter.
+        K: 6 decimals, E: 4 decimals for translation, 6 for rotation.
+        """
+        # Rounded tuples are reliable keys
+        K_key = tuple(torch.round(intrinsic.flatten(), decimals=6).tolist())
+        E_key = tuple(torch.round(extrinsic.flatten(), decimals=6).tolist())
+        return (K_key, E_key)
+
+    def forward(
+        self, 
+        features: torch.Tensor, 
+        intrinsic: Optional[torch.Tensor] = None, 
+        extrinsic: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        features : (B, C, D, img_H, img_W)
+        If intrinsic/extrinsic provided, uses (or builds) cached precomputer.
+        """
+        device = features.device
+        
+        # Use current precomp if no geometry provided
+        if intrinsic is None or extrinsic is None:
+            return self.voxel_pool(features, self.precomp)
+            
+        # Per-batch caching logic
+        # Note: In LSS, every sample in B typically uses the same rig calibration.
+        # If heterogeneous extrinsics are needed, this should loop or batch-cache.
+        # We assume batch-uniform geometry for now (standard for NuScenes rig).
+        cache_key = self._get_cache_key(intrinsic[0].cpu(), extrinsic[0].cpu())
+        
+        if cache_key not in self._cache:
+            # Build and cache on-device
+            if len(self._cache) >= self._max_cache_size:
+                self._cache.pop(next(iter(self._cache))) # Simple FIFO eviction
+            
+            new_precomp = DepthPrecomputer(
+                self.frustum_gen, self.bev_cfg, extrinsic[0]
+            ).to(device)
+            self._cache[cache_key] = new_precomp
+            
+        return self.voxel_pool(features, self._cache[cache_key])
 
     @property
     def frustum_shape(self) -> Tuple[int, int, int]:

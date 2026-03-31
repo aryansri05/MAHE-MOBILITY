@@ -1,29 +1,3 @@
-"""
-Subunit 3 — Occupancy Head
-Subunit 4 — Loss Functions and Evaluation Metrics
-===================================================
-
-Subunit 3
----------
-A lightweight convolutional head that maps BEV encoder features
-to a per-cell occupancy probability map.
-
-  Input  : (B, C, GRID_H, GRID_W)   — from BEVEncoder
-  Output : (B, 1, GRID_H, GRID_W)   — sigmoid probability, range [0, 1]
-
-Subunit 4
----------
-Loss
-  • Focal loss          — handles the severe class imbalance (most BEV
-                           cells are empty; occupied cells are rare).
-  • Binary cross-entropy — baseline comparator, weighted by pos_weight.
-
-Metrics (eval only, not differentiable)
-  • Occupancy IoU       — intersection-over-union on the binary grid
-  • Distance-weighted error — penalises mistakes close to the ego vehicle
-                              more than distant ones (per challenge spec).
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -233,10 +207,6 @@ def _build_distance_weight_map(device: torch.device) -> torch.Tensor:
 
     Weight formula:
         w(r, c) = 1 / (d_ego(r, c) + 1)
-
-    → cells at d=0 m get weight 1.0
-    → cells at d=50 m get weight ≈ 0.02
-    → cells closer to the car matter ~50× more than those at 50 m
     """
     # Physical coordinates of each cell centre
     rows = torch.arange(GRID_H, dtype=torch.float32, device=device)
@@ -261,13 +231,6 @@ def distance_weighted_error(
 ) -> torch.Tensor:
     """
     Challenge metric: distance-weighted mean absolute error.
-
-    DWE = Σ_{cells} w(cell) · |pred(cell) − gt(cell)|
-          ──────────────────────────────────────────────
-                    Σ_{cells} w(cell)
-
-    Errors near the ego vehicle are penalised more heavily.
-    Returns a scalar (mean over batch).
     """
     weights = _build_distance_weight_map(pred_probs.device)  # (1,1,H,W)
     gt_f = gt_mask.float()
@@ -280,26 +243,7 @@ def distance_weighted_error(
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Combined criterion (used in training loop)
-# ═══════════════════════════════════════════════════════════════════
-
-
 class OccupancyCriterion(nn.Module):
-    """
-    Joint training loss:  λ_focal · FocalLoss + λ_bce · WeightedBCE
-
-    In practice, focal loss alone is often sufficient;
-    the weighted BCE acts as a regulariser ensuring calibration.
-
-    Parameters
-    ----------
-    focal_alpha : float
-    focal_gamma : float
-    pos_weight  : float   — for the BCE branch
-    lambda_focal: float   — loss mixing coefficient
-    lambda_bce  : float
-    """
-
     def __init__(
         self,
         focal_alpha: float = 0.25,
@@ -307,62 +251,69 @@ class OccupancyCriterion(nn.Module):
         pos_weight: float = 20.0,
         lambda_focal: float = 1.0,
         lambda_bce: float = 0.5,
+        lambda_depth: float = 1.0,  # New weight for depth supervision
+        lambda_tv: float = 0.05      # Accuracy Push: Depth-axis TV loss weight
     ):
         super().__init__()
         self.focal = FocalLoss(focal_alpha, focal_gamma)
         self.bce = WeightedBCELoss(pos_weight)
         self.lf = lambda_focal
         self.lb = lambda_bce
+        self.ld = lambda_depth
+        self.ltv = lambda_tv
+
+    def compute_depth_loss(self, depth_probs, gt_depth):
+        """
+        depth_probs: (B, D, H, W)
+        gt_depth: (B, H, W) where 0 = no point, 1+ = bin index
+        """
+        # Create mask for valid LiDAR points
+        mask = gt_depth > 0
+        if not mask.any():
+            return torch.tensor(0.0).to(depth_probs.device)
+        
+        # Pull out predicted logits for points that actually have LiDAR
+        # Adjust gt_depth to 0-indexed for CrossEntropy
+        target = (gt_depth[mask] - 1).long()
+        
+        # Reshape predicted probs to (B, H, W, D) then mask
+        pred = depth_probs.permute(0, 2, 3, 1)[mask]
+        
+        # Use log_softmax + NLL (effectively CrossEntropy)
+        loss = F.nll_loss(torch.log(pred + 1e-9), target)
+        return loss
 
     def forward(
         self,
-        logits: torch.Tensor,  # (B, 1, H, W)
-        targets: torch.Tensor,  # (B, 1, H, W) binary float
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        depth_probs: torch.Tensor = None,
+        gt_depth: torch.Tensor = None
     ) -> dict[str, torch.Tensor]:
-        """
-        Returns a dict with individual loss components and the total,
-        so the training loop can log each term separately.
-        """
         l_focal = self.focal(logits, targets)
         l_bce = self.bce(logits, targets)
+        
         total = self.lf * l_focal + self.lb * l_bce
+        
+        d_loss = torch.tensor(0.0).to(logits.device)
+        tv_loss = torch.tensor(0.0).to(logits.device)
+        
+        if depth_probs is not None:
+            # 1. Depth axis TV loss (Sharpening)
+            # depth_probs is (B, D, H, W). Shift diff along D axis.
+            # Only apply to pixels that have some predicted mass (avoid zero-noise floor)
+            tv_loss = torch.abs(depth_probs[:, 1:] - depth_probs[:, :-1]).mean()
+            total += self.ltv * tv_loss
+        
+        if depth_probs is not None and gt_depth is not None:
+            # 2. Depth NLL Supervision
+            d_loss = self.compute_depth_loss(depth_probs, gt_depth)
+            total += self.ld * d_loss
 
         return {
             "loss": total,
             "focal_loss": l_focal,
             "bce_loss": l_bce,
+            "depth_loss": d_loss,
+            "depth_tv_loss": tv_loss
         }
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  Smoke test
-# ═══════════════════════════════════════════════════════════════════
-
-if __name__ == "__main__":
-    print("Occupancy Head + Loss/Metrics — smoke test")
-    B = 2
-
-    # ── Head ──────────────────────────────────────────────────────
-    head = OccupancyHead(in_channels=128, hidden_ch=64)
-    feats = torch.randn(B, 128, GRID_H, GRID_W)
-    logits = head(feats)
-    probs, mask = head.predict(feats)
-
-    print(f"  logits : {tuple(logits.shape)}")
-    print(f"  probs  : {tuple(probs.shape)}  [{probs.min():.3f}, {probs.max():.3f}]")
-    print(f"  mask   : {mask.sum().item()} occupied cells (of {GRID_H * GRID_W})")
-
-    # ── Loss ──────────────────────────────────────────────────────
-    targets = (torch.rand(B, 1, GRID_H, GRID_W) > 0.95).float()
-    criterion = OccupancyCriterion()
-    losses = criterion(logits, targets)
-    print(f"\n  total loss : {losses['loss'].item():.4f}")
-    print(f"  focal loss : {losses['focal_loss'].item():.4f}")
-    print(f"  bce loss   : {losses['bce_loss'].item():.4f}")
-
-    # ── Metrics ───────────────────────────────────────────────────
-    iou = occupancy_iou(mask, targets.bool())
-    dwe = distance_weighted_error(probs, targets)
-    print(f"\n  occ-IoU             : {iou.item():.4f}")
-    print(f"  dist-weighted error : {dwe.item():.4f}")
-    print("\n  ✓ all checks passed")

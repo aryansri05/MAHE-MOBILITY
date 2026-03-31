@@ -220,25 +220,3 @@ def save_grid(grid: np.ndarray, path: str = "ground_truth_occ.npy"):
 # MAIN — wire it all together
 # ═════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
-    # ── CONFIG — edit these two lines ────────────────────────────
-    DATAROOT = "/data/nuscenes"  # path to your dataset
-    NUSCENES_VER = "v1.0-mini"  # or "v1.0-trainval"
-    SAMPLE_IDX = 0  # which sample to use (0 = first)
-    # ─────────────────────────────────────────────────────────────
-
-    nusc = load_nuscenes(DATAROOT, NUSCENES_VER)
-    sample_token = nusc.sample[SAMPLE_IDX]["token"]
-    print(f"\nProcessing sample: {sample_token[:8]}...")
-
-    # Load and transform LiDAR
-    pts_ego = load_lidar_ego_frame(nusc, sample_token)
-
-    # Build ground truth grid
-    gt_grid = lidar_to_occupancy(pts_ego)
-
-    # Save as .npy for Person A to compare against
-    save_grid(gt_grid, "ground_truth_occ.npy")
-
-    # Visualise
-    visualise_occupancy(gt_grid, save_path="gt_occupancy.png")
