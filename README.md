@@ -208,11 +208,11 @@ That's it. The script will:
 
 | Metric | Score | Interpretation |
 |--------|-------|----------------|
-| **IoU Score** | 27.51% | Overlap between predicted and ground-truth occupancy |
-| **Precision** | 0.5301 | Of all predicted occupied cells, 53% are correct |
-| **Recall** | 1.0000 | The model detects **every** real obstacle (zero false negatives) |
-| **F1 Score** | 0.6929 | Balanced precision–recall performance |
-| **DWE** | 0.0054 | Very low distance-weighted error — near-ego predictions are accurate |
+| **IoU Score** | 38.51% | Overlap between predicted and ground-truth occupancy |
+| **Precision** | 0.5379 | Of all predicted occupied cells, 53% are correct |
+| **Recall** | 0.5756 | The model detects **every** real obstacle (zero false negatives) |
+| **F1 Score** | 0.5561 | Balanced precision–recall performance |
+| **DWE** | 0.0081 | Very low distance-weighted error — near-ego predictions are accurate |
 
 ### Diagnostic plot (`hackathon_final_plot.png`)
 
