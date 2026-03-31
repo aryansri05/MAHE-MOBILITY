@@ -224,13 +224,16 @@ This runs inference on a random validation sample and prints:
 
 ---
 
-## 🖥️ Running on Kaggle
+## Training on Kaggle (Experiment Branch)
+
+To clone this specific experimental branch (with Lovász-Softmax and 8-bit optimization) on Kaggle, use the `-b experiment` flag:
 
 ```python
 # In a Kaggle notebook cell:
-!git clone https://github.com/aryansri05/MAHE-MOBILITY.git
+!rm -rf MAHE-MOBILITY
+!git clone -b experiment https://github.com/aryansri05/MAHE-MOBILITY
 %cd MAHE-MOBILITY
-!pip install nuscenes-devkit pyquaternion -q
+!pip install nuscenes-devkit pyquaternion bitsandbytes -q
 
 !python scripts/pipeline.py \
     --dataroot /path/to/nuscenes \
