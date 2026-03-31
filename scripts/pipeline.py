@@ -219,7 +219,7 @@ class BEVModel(nn.Module):
 def train_pipeline(
     dataroot: str = "./data/nuscenes",
     version: str = "v1.0-mini",
-    batch_size: int = 4,
+    batch_size: int = 2,
     num_epochs: int = 1,
     out_channels: int = 64,
 ):
@@ -307,6 +307,7 @@ def train_pipeline(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
             optimizer.step()
+            torch.cuda.empty_cache()  # Free unused cached memory each batch
 
             # Train tracking metrics
             with torch.no_grad():
