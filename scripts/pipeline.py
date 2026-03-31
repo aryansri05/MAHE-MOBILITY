@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
 import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend — safe for Kaggle/headless servers
 import torch
