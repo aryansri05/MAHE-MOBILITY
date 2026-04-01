@@ -38,6 +38,11 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 # =============================================================
 #  Helper: quaternion (w,x,y,z) → 3×3 rotation matrix
 # =============================================================
+# Kaggle Path Correction: ensure we aren't training in a nested "MAHE-MOBILITY/MAHE-MOBILITY" dir
+if os.getcwd().endswith("MAHE-MOBILITY/MAHE-MOBILITY"):
+    parent = os.path.dirname(os.getcwd())
+    print(f"⚠️ Nested directory detected. Shifting CWD up to: {parent}")
+    os.chdir(parent)
 
 def quat_to_rot(q: torch.Tensor) -> torch.Tensor:
     """NuScenes quaternion (w,x,y,z) → (3,3) rotation matrix."""

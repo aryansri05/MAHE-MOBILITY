@@ -229,11 +229,15 @@ This runs inference on a random validation sample and prints:
 To clone this specific experimental branch (with Lovász-Softmax and 8-bit optimization) on Kaggle, use the `-b experiment` flag:
 
 ```python
-# In a Kaggle notebook cell:
-!rm -rf MAHE-MOBILITY
-!git clone -b experiment https://github.com/aryansri05/MAHE-MOBILITY
-# Cell 2: Install dependencies & execute training
-%cd MAHE-MOBILITY
+# Cell 1: Idempotent Clone & Setup
+import os
+if not os.path.exists('MAHE-MOBILITY'):
+    !git clone -b experiment https://github.com/aryansri05/MAHE-MOBILITY
+else:
+    print("✅ Project already exists. Pulling latest...")
+    !cd MAHE-MOBILITY && git pull origin experiment
+
+%cd /kaggle/working/MAHE-MOBILITY
 !pip install -r requirements.txt -q
 !PYTHONPATH=src python scripts/pipeline.py \
     --dataroot "/kaggle/input/datasets/invisibleos/v1-0-mini" \

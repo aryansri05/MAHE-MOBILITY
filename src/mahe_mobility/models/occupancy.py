@@ -128,7 +128,10 @@ class BinaryBoundaryLoss(nn.Module):
         grad_y_gt = F.conv2d(targets, self.kernel_y, padding=1)
         edge_pred = torch.sqrt(grad_x_pred**2 + grad_y_pred**2 + 1e-6)
         edge_gt = torch.sqrt(grad_x_gt**2 + grad_y_gt**2 + 1e-6)
-        return F.mse_loss(edge_pred, edge_gt)
+        # Penalize differences in edge strength/location
+        # Accuracy Push: Clip MSE to prevent spikes drowning out semantic features
+        loss = F.mse_loss(edge_pred, edge_gt)
+        return torch.clamp(loss, max=2.0)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -170,10 +173,10 @@ class OccupancyCriterion(nn.Module):
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         pos_weight: float = 20.0,
-        lambda_lovasz: float = 1.0,  # IoU Surgery: Main driver
-        lambda_boundary: float = 1.0, # Accuracy Push: Sharper edges
-        lambda_focal: float = 0.5,
-        lambda_bce: float = 0.2,
+        lambda_lovasz: float = 0.5,   # Reduced (was 1.0) for stability
+        lambda_boundary: float = 0.1, # Reduced (was 1.0) — don't over-fit to edges
+        lambda_focal: float = 1.0,    # RESTORED AS ANCHOR (was 0.5)
+        lambda_bce: float = 0.1,      # Reduced (was 0.2)
         lambda_depth: float = 1.0,
         lambda_tv: float = 0.05
     ):
