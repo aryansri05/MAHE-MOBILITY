@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from nuscenes.nuscenes import NuScenes
+from torch.optim.lr_scheduler import OneCycleLR
 try:
     import bitsandbytes as bnb
 except ImportError:
@@ -156,10 +157,23 @@ def train_pipeline(
     
     if bnb is not None:
         print("💎 Using bitsandbytes 8-bit AdamW optimizer.")
-        optimizer = bnb.optim.Adam8bit(model.parameters(), lr=2e-4, weight_decay=1e-4)
+        optimizer = bnb.optim.Adam8bit(model.parameters(), lr=1e-4, weight_decay=1e-4) # Base LR lowered for scheduler
     else:
         print("⚠️ bitsandbytes not found, falling back to standard AdamW.")
-        optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
+
+    # 📈 OneCycleLR: Warmup + Cosine Anneal
+    steps_per_epoch = len(train_loader) // accumulation_steps
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=4e-4,
+        epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        pct_start=0.2, # 20% warmup (10 epochs if num_epochs=50)
+        div_factor=10.0,
+        final_div_factor=1e4,
+    )
+
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     # Paths
@@ -202,15 +216,18 @@ def train_pipeline(
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
+                    scheduler.step()
             else:
                 loss.backward()
                 if (batch_idx + 1) % accumulation_steps == 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=35.0)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+                    scheduler.step()
 
             if (batch_idx + 1) % 10 == 0:
-                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} (Depth: {loss_dict['depth_loss']:.4f})")
+                curr_lr = optimizer.param_groups[0]['lr']
+                print(f"  [{epoch+1}/{num_epochs}][{batch_idx+1}] Loss: {loss.item()*accumulation_steps:.4f} | LR: {curr_lr:.2e} (Depth: {loss_dict['depth_loss']:.4f})")
 
         # --- VALIDATION (Dynamic Thresholding Hook) ---
         model.eval()
