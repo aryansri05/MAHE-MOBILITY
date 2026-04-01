@@ -162,17 +162,7 @@ def train_pipeline(
         print("⚠️ bitsandbytes not found, falling back to standard AdamW.")
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
 
-    # 📈 OneCycleLR: Warmup + Cosine Anneal
-    steps_per_epoch = len(train_loader) // accumulation_steps
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=4e-4,
-        epochs=num_epochs,
-        steps_per_epoch=steps_per_epoch,
-        pct_start=0.2, # 20% warmup (10 epochs if num_epochs=50)
-        div_factor=10.0,
-        final_div_factor=1e4,
-    )
+    # (Scheduler init moved below auto-resume for state-dict safety)
 
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
@@ -194,6 +184,23 @@ def train_pipeline(
         print(f"   Resuming from Epoch {start_epoch+1}")
 
     print("Starting Training Loop...")
+
+    # 📈 OneCycleLR: Initialize AFTER loading optimizer state to avoid 'initial_lr' KeyError
+    steps_per_epoch = len(train_loader) // accumulation_steps
+    # If resuming, calculate current internal step
+    last_step = (start_epoch * steps_per_epoch) - 1
+    
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=4e-4,
+        epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        pct_start=0.2,
+        div_factor=10.0,
+        final_div_factor=1e4,
+        last_epoch=last_step
+    )
+
     for epoch in range(start_epoch, num_epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
